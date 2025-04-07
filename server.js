@@ -9,6 +9,17 @@ const mediasoup = require('mediasoup'); // WebRTC SFU for Node.js
 const fs = require('fs');
 const path = require('path');
 
+// Debug: Log all environment variables (excluding sensitive data)
+console.log('=== ENVIRONMENT VARIABLES ===');
+for (const key in process.env) {
+  if (key === 'OPENAI_API_KEY' || key === 'GEMINI_API_KEY' || key === 'GOOGLE_CREDENTIALS_JSON') {
+    console.log(`${key}: [Present but value hidden]`);
+  } else {
+    console.log(`${key}: ${process.env[key]}`);
+  }
+}
+console.log('============================');
+
 // Import fetch for Node.js versions that don't have it built-in
 let fetch;
 if (!globalThis.fetch) {
@@ -63,9 +74,31 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
     console.error('Error setting up Google credentials:', error);
     process.exit(1);
   }
-} else if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  console.error('No Google credentials configured. Set either GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_CREDENTIALS_JSON environment variable');
-  process.exit(1);
+} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  console.log(`Using existing credentials file at ${process.env.GOOGLE_APPLICATION_CREDENTIALS}`);
+} else {
+  // Production error in normal cases
+  console.error('No Google credentials configured. GOOGLE_CREDENTIALS_JSON environment variable is missing.');
+  
+  // Development fallback for testing purposes
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('Creating dummy credentials for development environment.');
+    // Create a dummy credentials file for development/testing
+    const dummyCredentials = {
+      type: 'service_account',
+      project_id: 'dummy-project',
+      private_key_id: '00000000000000000000000000000000',
+      private_key: '-----BEGIN PRIVATE KEY-----\nMIIE00000000000000000000000000000000000000000000000000000000000\n-----END PRIVATE KEY-----\n',
+      client_email: 'dummy@example.com',
+      client_id: '000000000000000000000',
+    };
+    const tempCredentialsPath = path.join(__dirname, 'dummy-credentials-temp.json');
+    fs.writeFileSync(tempCredentialsPath, JSON.stringify(dummyCredentials, null, 2));
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = tempCredentialsPath;
+    console.log('Dummy credentials file created at', tempCredentialsPath);
+  } else {
+    process.exit(1);
+  }
 }
 
 // Initialize Express app

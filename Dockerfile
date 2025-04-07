@@ -23,6 +23,14 @@ COPY . .
 ENV NODE_ENV=production
 ENV PORT=8080
 
+# Check for credentials and set environment variable if found
+RUN if [ -f .env ]; then \
+    echo "Using credentials from .env file"; \
+    grep -v '^#' .env > /tmp/env.txt; \
+    export $(cat /tmp/env.txt | xargs); \
+    rm /tmp/env.txt; \
+    fi
+
 # Expose port
 EXPOSE 8080
 
