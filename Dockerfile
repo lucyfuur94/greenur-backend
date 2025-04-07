@@ -31,8 +31,11 @@ RUN if [ -f .env ]; then \
     rm /tmp/env.txt; \
     fi
 
+# Make the startup script executable
+RUN chmod +x start.sh
+
 # Expose port
 EXPOSE 8080
 
-# Start server
-CMD ["node", "server.js"] 
+# Start using our custom script
+CMD ["./start.sh"] 
