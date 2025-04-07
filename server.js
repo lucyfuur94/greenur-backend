@@ -20,8 +20,24 @@ if (!globalThis.fetch) {
 // Set up Google credentials - either use file path or JSON content from env var
 if (process.env.GOOGLE_CREDENTIALS_JSON) {
   try {
-    // Parse the JSON credentials from environment variable
-    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+    // Check if the JSON string is base64 encoded
+    let credentials;
+    const jsonString = process.env.GOOGLE_CREDENTIALS_JSON;
+    
+    // Try to parse directly first
+    try {
+      credentials = JSON.parse(jsonString);
+      console.log('Parsed Google credentials JSON successfully');
+    } catch (parseError) {
+      // If direct parsing fails, try to decode as base64
+      try {
+        const decoded = Buffer.from(jsonString, 'base64').toString('utf8');
+        credentials = JSON.parse(decoded);
+        console.log('Parsed base64-encoded Google credentials successfully');
+      } catch (decodeError) {
+        throw new Error('Failed to parse credentials as JSON or base64-encoded JSON');
+      }
+    }
     
     // Write credentials to a temporary file
     const tempCredentialsPath = path.join(__dirname, 'google-credentials-temp.json');
@@ -30,7 +46,7 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
     // Set the path for Google client libraries to use
     process.env.GOOGLE_APPLICATION_CREDENTIALS = tempCredentialsPath;
     
-    console.log('Using Google credentials from environment variable JSON');
+    console.log('Using Google credentials from environment variable');
   } catch (error) {
     console.error('Error setting up Google credentials from JSON:', error);
     process.exit(1);
