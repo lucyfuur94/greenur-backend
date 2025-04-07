@@ -1,0 +1,23 @@
+{
+  "name": "greenur-botanist-voice-service",
+  "version": "1.0.0",
+  "description": "Voice calling service for Greenur's Botanist AI Assistant",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/speech": "^5.4.1",
+    "@google-cloud/text-to-speech": "^4.2.1",
+    "express": "^4.18.2",
+    "mediasoup": "^3.13.18",
+    "node-fetch": "^2.6.7",
+    "openai": "^4.28.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.14.2"
+  },
+  "type": "commonjs"
+} 

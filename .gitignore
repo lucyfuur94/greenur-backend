@@ -1,0 +1,7 @@
+node_modules/
+.env
+.env.local
+*.pem
+*credentials*.json
+*service-account*.json
+google-credentials-temp.json

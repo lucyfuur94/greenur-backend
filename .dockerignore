@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.git
+.github
+.gitignore
+.env
+*.md
+!README.md
+.DS_Store
+dev-server.js
+**/*.credentials.json
+**/*-temp.json 

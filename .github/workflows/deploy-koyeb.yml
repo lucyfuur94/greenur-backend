@@ -1,0 +1,55 @@
+name: Deploy to Koyeb
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Koyeb CLI
+        run: |
+          curl -fsSL https://cli.koyeb.com/install.sh | sh
+          echo "$HOME/.koyeb/bin" >> $GITHUB_PATH
+
+      - name: Deploy to Koyeb
+        env:
+          KOYEB_API_TOKEN: ${{ secrets.KOYEB_API_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          if koyeb service get greenur-botanist-service &> /dev/null; then
+            # Service exists, update it
+            koyeb service update greenur-botanist-service \
+              --git github.com/lucyfuur94/greenur-backend \
+              --git-branch main \
+              --ports 8080:http \
+              --env OPENAI_API_KEY="${OPENAI_API_KEY}" \
+              --env GOOGLE_CREDENTIALS_JSON="${GOOGLE_CREDENTIALS_JSON}" \
+              --env LOG_LEVEL=info
+          else
+            # Service doesn't exist, create it
+            koyeb app create greenur-botanist
+            koyeb service create greenur-botanist-service \
+              --app greenur-botanist \
+              --git github.com/lucyfuur94/greenur-backend \
+              --git-branch main \
+              --ports 8080:http \
+              --env OPENAI_API_KEY="${OPENAI_API_KEY}" \
+              --env GOOGLE_CREDENTIALS_JSON="${GOOGLE_CREDENTIALS_JSON}" \
+              --env LOG_LEVEL=info 
