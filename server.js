@@ -35,8 +35,23 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
   try {
     console.log('Processing Google credentials from environment variable...');
     
+    // The credentials might be base64 encoded, try to decode first
+    let credentialsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+    try {
+      // Check if the value starts with characters that suggest base64 encoding
+      if (/^[a-zA-Z0-9+/=]+$/.test(credentialsJson)) {
+        const decodedCredentials = Buffer.from(credentialsJson, 'base64').toString('utf8');
+        // Check if the decoded value is valid JSON
+        JSON.parse(decodedCredentials);
+        credentialsJson = decodedCredentials;
+        console.log('Successfully decoded base64 credentials');
+      }
+    } catch (decodeError) {
+      console.log('Credentials do not appear to be base64 encoded, using as is');
+    }
+    
     // Use credentials directly without writing to a file
-    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = credentialsJson;
     console.log('Using Google credentials directly from environment variable');
     
   } catch (error) {
@@ -84,14 +99,24 @@ if (useGemini) {
 // Initialize Google Speech-to-Text client with options for credentials
 const speechClientOptions = {};
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-  speechClientOptions.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  try {
+    speechClientOptions.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+    console.log('Successfully initialized Speech-to-Text client with credentials');
+  } catch (parseError) {
+    console.error('Error parsing credentials for Speech-to-Text client:', parseError);
+  }
 }
 const speechClient = new SpeechClient(speechClientOptions);
 
 // Initialize Google Text-to-Speech client with options for credentials
 const ttsClientOptions = {};
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-  ttsClientOptions.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  try {
+    ttsClientOptions.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+    console.log('Successfully initialized Text-to-Speech client with credentials');
+  } catch (parseError) {
+    console.error('Error parsing credentials for Text-to-Speech client:', parseError);
+  }
 }
 const ttsClient = new TextToSpeechClient(ttsClientOptions);
 
