@@ -33,44 +33,20 @@ if (!globalThis.fetch) {
 // Set up Google credentials - either use file path or JSON content from env var
 if (process.env.GOOGLE_CREDENTIALS_JSON) {
   try {
-    // For testing, let's log the first few characters to understand the format
-    const jsonString = process.env.GOOGLE_CREDENTIALS_JSON;
-    console.log('Processing Google credentials...');
-    console.log('First few characters:', jsonString.substring(0, 20) + '...');
+    console.log('Processing Google credentials from environment variable...');
     
-    // Since we know this is a specific format of credentials, let's try to parse it directly
-    try {
-      // Assuming it's JSON with some special characters
-      const credentials = JSON.parse('{"type": "service_account","project_id": "aegisg-494e1","private_key_id": "c2843a34790fd2f0c57bb3db85b30238","private_key": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDBWXbvCk/1x4Jx\\nE81bVK+GA26gqHCqxHC7OEKZxTyUxVrZm2hTJIWiueue2+iJ8/s/Hdb7B4KUnRDt\\n0BH7tHpwnDLwZPPW62X1Fy8RDVACO2dW/l+6RAnfVjNEgSeG//3v5ig3bj7kFRuU\\nfT2UuPqZ+AQvz9tAkWzXyPX9O1ddHZMWgyZIOAdS1frrl4ewQA1+Klt62mhdqAJ0\\nBvoU0mrYikqsJVj5NmQCSIaV278z/K9MUZ0gOE2Ic9ZQylXdBadIy55qI2nP7c5W\\nNUmndQrhKA6OxbfsLnngSebNmm8gV0FItSUWcojdconNs9b","client_email": "test-gizmo@aegisg-494e1.iam.gserviceaccount.com","client_id": "112246461978835175338"}');
-      
-      // Write credentials to a temporary file
-      const tempCredentialsPath = path.join(__dirname, 'google-credentials-temp.json');
-      fs.writeFileSync(tempCredentialsPath, JSON.stringify(credentials, null, 2));
-      
-      // Set the path for Google client libraries to use
-      process.env.GOOGLE_APPLICATION_CREDENTIALS = tempCredentialsPath;
-      
-      console.log('Using hardcoded Google credentials format based on .env pattern');
-    } catch (hardcodedError) {
-      console.error('Failed to use hardcoded credentials format:', hardcodedError);
-      
-      // Fallback to dummy credentials for development
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('Falling back to dummy credentials');
-        setupDummyCredentials();
-      } else {
-        throw hardcodedError;
-      }
-    }
+    // Use credentials directly without writing to a file
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
+    console.log('Using Google credentials directly from environment variable');
+    
   } catch (error) {
     console.error('Error setting up Google credentials:', error);
     
-    // Only exit in production, create dummy creds in development
+    // Only exit in production
     if (process.env.NODE_ENV === 'production') {
       process.exit(1);
     } else {
-      console.log('Creating dummy credentials for development environment.');
-      setupDummyCredentials();
+      console.log('Development environment detected - operations requiring Google credentials may fail');
     }
   }
 } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
@@ -81,28 +57,10 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
   
   // Development fallback for testing purposes
   if (process.env.NODE_ENV !== 'production') {
-    console.log('Creating dummy credentials for development environment.');
-    setupDummyCredentials();
+    console.log('Development environment detected - operations requiring Google credentials may fail');
   } else {
     process.exit(1);
   }
-}
-
-// Helper function to create dummy credentials for development
-function setupDummyCredentials() {
-  // Create a dummy credentials file for development/testing
-  const dummyCredentials = {
-    type: 'service_account',
-    project_id: 'dummy-project',
-    private_key_id: '00000000000000000000000000000000',
-    private_key: '-----BEGIN PRIVATE KEY-----\nMIIE00000000000000000000000000000000000000000000000000000000000\n-----END PRIVATE KEY-----\n',
-    client_email: 'dummy@example.com',
-    client_id: '000000000000000000000',
-  };
-  const tempCredentialsPath = path.join(__dirname, 'dummy-credentials-temp.json');
-  fs.writeFileSync(tempCredentialsPath, JSON.stringify(dummyCredentials, null, 2));
-  process.env.GOOGLE_APPLICATION_CREDENTIALS = tempCredentialsPath;
-  console.log('Dummy credentials file created at', tempCredentialsPath);
 }
 
 // Initialize Express app
@@ -123,11 +81,19 @@ if (useGemini) {
   geminiApiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent';
 }
 
-// Initialize Google Speech-to-Text client
-const speechClient = new SpeechClient();
+// Initialize Google Speech-to-Text client with options for credentials
+const speechClientOptions = {};
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  speechClientOptions.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+}
+const speechClient = new SpeechClient(speechClientOptions);
 
-// Initialize Google Text-to-Speech client
-const ttsClient = new TextToSpeechClient();
+// Initialize Google Text-to-Speech client with options for credentials
+const ttsClientOptions = {};
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  ttsClientOptions.credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+}
+const ttsClient = new TextToSpeechClient(ttsClientOptions);
 
 // Set up logging
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
@@ -213,9 +179,9 @@ app.post('/api/chat', authenticateRequest, async (req, res) => {
         modelId: modelId || 'gpt-4o',
         modelType: modelType || 'openai',
         voiceConfig: {
-          languageCode: 'en-US',
-          ssmlGender: 'FEMALE',
-          name: 'en-US-Neural2-F'
+          languageCode: 'en-IN',
+          ssmlGender: 'MALE',
+          name: 'en-IN-Chirp3-HD-Orus'
         },
         isResponseInterrupted: false
       };
@@ -233,17 +199,17 @@ app.post('/api/chat', authenticateRequest, async (req, res) => {
     if (voice) {
       if (typeof voice === 'object') {
         session.voiceConfig = {
-          languageCode: voice.languageCode || 'en-US',
-          ssmlGender: voice.ssmlGender || 'FEMALE',
-          name: voice.name || 'en-US-Neural2-F'
+          languageCode: voice.languageCode || 'en-IN',
+          ssmlGender: voice.ssmlGender || 'MALE',
+          name: voice.name || 'en-IN-Chirp3-HD-Orus'
         };
       } else if (typeof voice === 'string') {
-        // Extract language code from voice name (e.g., en-US from en-US-Neural2-F)
+        // Extract language code from voice name (e.g., en-IN from en-IN-Chirp3-HD-Orus)
         const langCodeMatch = voice.match(/^([a-z]{2}-[A-Z]{2})/);
         
         session.voiceConfig = {
-          languageCode: langCodeMatch ? langCodeMatch[1] : 'en-US',
-          ssmlGender: 'FEMALE', // Default
+          languageCode: langCodeMatch ? langCodeMatch[1] : 'en-IN',
+          ssmlGender: voice.includes('Orus') ? 'MALE' : 'FEMALE',
           name: voice
         };
       }
@@ -326,9 +292,9 @@ wss.on('connection', (ws) => {
     modelType: 'openai', // Default model type
     audioSession: false, // Whether this session is using audio
     voiceConfig: {
-      languageCode: 'en-US',
-      ssmlGender: 'FEMALE',
-      name: 'en-US-Neural2-F'
+      languageCode: 'en-IN',
+      ssmlGender: 'MALE',
+      name: 'en-IN-Chirp3-HD-Orus'
     }, // Default voice configuration
     isResponseInterrupted: false // Track if response was interrupted
   };
@@ -364,16 +330,16 @@ wss.on('connection', (ws) => {
             // If a complete voice config object is provided
             if (typeof data.voice === 'object') {
               connectionData.voiceConfig = {
-                languageCode: data.voice.languageCode || 'en-US',
-                ssmlGender: data.voice.ssmlGender || 'FEMALE',
-                name: data.voice.name || 'en-US-Neural2-F'
+                languageCode: data.voice.languageCode || 'en-IN',
+                ssmlGender: data.voice.ssmlGender || 'MALE',
+                name: data.voice.name || 'en-IN-Chirp3-HD-Orus'
               };
             } 
             // If just a voice name is provided
             else if (typeof data.voice === 'string') {
               connectionData.voiceConfig.name = data.voice;
               
-              // Extract language code from voice name (e.g., en-US from en-US-Neural2-F)
+              // Extract language code from voice name (e.g., en-IN from en-IN-Chirp3-HD-Orus)
               const langCodeMatch = data.voice.match(/^([a-z]{2}-[A-Z]{2})/);
               if (langCodeMatch) {
                 connectionData.voiceConfig.languageCode = langCodeMatch[1];
@@ -445,7 +411,8 @@ wss.on('connection', (ws) => {
           // Process audio data (binary, base64, etc.)
           if (data.format === 'base64') {
             const audioBuffer = Buffer.from(data.audio, 'base64');
-            const transcript = await speechToText(audioBuffer);
+            // Pass the language code from the current voice config
+            const transcript = await speechToText(audioBuffer, connectionData.voiceConfig.languageCode);
             
             if (transcript) {
               logger.info(`Transcribed audio from ${connectionId}: "${transcript}"`);
@@ -668,25 +635,32 @@ async function getGeminiResponse(conversationContext, systemPrompt, modelId) {
 }
 
 /**
- * Convert text to speech and return audio buffer
+ * Convert text to speech
  */
-async function textToSpeech(text, voiceConfig = null) {
+async function textToSpeech(text, voiceConfig) {
   try {
-    // Use provided voice config or default
-    const voice = voiceConfig || {
-      languageCode: 'en-US',
-      ssmlGender: 'FEMALE',
-      name: 'en-US-Neural2-F'
+    // Set default voice parameters if not provided
+    const voice = {
+      languageCode: voiceConfig?.languageCode || 'en-IN',
+      ssmlGender: voiceConfig?.ssmlGender || 'MALE',
+      name: voiceConfig?.name || 'en-IN-Chirp3-HD-Orus'
     };
     
-    // Request text-to-speech from Google
-    const [response] = await ttsClient.synthesizeSpeech({
+    // Log the voice being used
+    logger.info(`Converting text to speech using voice: ${voice.name} (${voice.languageCode})`);
+    
+    // Build the synthesis request
+    const request = {
       input: { text },
       voice: voice,
       audioConfig: { audioEncoding: 'MP3' },
-    });
+    };
     
-    return response.audioContent;
+    // Generate speech
+    const [response] = await ttsClient.synthesizeSpeech(request);
+    
+    // Return the audio content as Buffer
+    return Buffer.from(response.audioContent);
   } catch (error) {
     logger.error('Error in text-to-speech:', error);
     return null;
@@ -696,10 +670,30 @@ async function textToSpeech(text, voiceConfig = null) {
 /**
  * Convert speech to text
  */
-async function speechToText(audioBuffer) {
+async function speechToText(audioBuffer, languageCode = 'en-IN') {
   try {
     // Convert the audio buffer to a base64-encoded string
     const audioBytes = audioBuffer.toString('base64');
+    
+    // Determine language code based on the provided voice language
+    let detectedLanguageCode = 'en-IN'; // Default to Indian English
+    
+    if (languageCode) {
+      // If a Hindi voice is being used, set to Hindi
+      if (languageCode.startsWith('hi-')) {
+        detectedLanguageCode = 'hi-IN';
+      } 
+      // If it's Indian English, use en-IN
+      else if (languageCode === 'en-IN') {
+        detectedLanguageCode = 'en-IN';
+      }
+      // Otherwise use the provided language code
+      else {
+        detectedLanguageCode = languageCode;
+      }
+    }
+    
+    logger.info(`Using speech recognition language: ${detectedLanguageCode}`);
     
     // Create the request
     const request = {
@@ -709,7 +703,7 @@ async function speechToText(audioBuffer) {
       config: {
         encoding: 'MP3',
         sampleRateHertz: 48000,
-        languageCode: 'en-US',
+        languageCode: detectedLanguageCode,
         model: 'default',
         useEnhanced: true,
         enableAutomaticPunctuation: true,
@@ -756,8 +750,34 @@ function sendError(ws, errorMessage) {
 // 1. List available voices
 app.get('/api/list-voices', authenticateRequest, async (req, res) => {
   try {
-    const [result] = await ttsClient.listVoices({});
-    res.json(result.voices);
+    // Define the only voices we want to support
+    const supportedVoices = [
+      // English - Indian voices
+      {
+        name: 'en-IN-Chirp3-HD-Orus',
+        languageCodes: ['en-IN'],
+        ssmlGender: 'MALE'
+      },
+      {
+        name: 'en-IN-Chirp3-HD-Zephyr',
+        languageCodes: ['en-IN'],
+        ssmlGender: 'FEMALE'
+      },
+      // Hindi voices
+      {
+        name: 'hi-IN-Chirp3-HD-Orus',
+        languageCodes: ['hi-IN'],
+        ssmlGender: 'MALE'
+      },
+      {
+        name: 'hi-IN-Chirp3-HD-Zephyr',
+        languageCodes: ['hi-IN'],
+        ssmlGender: 'FEMALE'
+      }
+    ];
+    
+    // Simply return our fixed list of supported voices
+    res.json(supportedVoices);
   } catch (error) {
     logger.error('Error listing voices:', error);
     res.status(500).json({ error: 'Failed to list voices' });
