@@ -5,9 +5,13 @@
  */
 
 // Configuration
-const serverUrl = 'wss://your-koyeb-app-name.koyeb.app'; // Replace with your actual server URL
+const apiBaseUrl = 'https://your-render-app-name.onrender.com'; // Replace with your actual server URL
+const apiSecretKey = 'YOUR_API_KEY'; // Replace with your actual API key
 const useAudio = true; // Set to true to enable audio input/output
 const preferredModel = 'gpt-4o'; // The language model to use
+
+// WebSocket URL with authentication
+const wsUrl = `${apiBaseUrl.replace('https://', 'wss://').replace('http://', 'ws://')}?api_key=${apiSecretKey}`;
 
 // Connection state
 let socket;
@@ -18,7 +22,7 @@ let isConnected = false;
 function connect() {
   console.log('Connecting to Botanist AI service...');
   
-  socket = new WebSocket(serverUrl);
+  socket = new WebSocket(wsUrl);
   
   // Connection opened
   socket.addEventListener('open', (event) => {
@@ -214,13 +218,14 @@ setTimeout(() => {
 
 // Example of using REST API instead of WebSockets
 async function sendRESTMessage(message) {
-  const apiUrl = 'https://your-koyeb-app-name.koyeb.app/api/chat';
+  const apiUrl = `${apiBaseUrl}/api/chat`;
   
   try {
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-API-Key': apiSecretKey
       },
       body: JSON.stringify({
         message: message,

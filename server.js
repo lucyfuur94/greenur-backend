@@ -14,7 +14,7 @@ require('dotenv').config();
 // Debug: Log environment variables (excluding sensitive data)
 console.log('=== ENVIRONMENT VARIABLES ===');
 for (const key in process.env) {
-  if (key === 'OPENAI_API_KEY' || key === 'GEMINI_API_KEY' || key === 'GOOGLE_CREDENTIALS_JSON') {
+  if (key === 'OPENAI_API_KEY' || key === 'GEMINI_API_KEY' || key === 'GOOGLE_CREDENTIALS_JSON' || key === 'API_SECRET_KEY') {
     console.log(`${key}: [Present but value hidden]`);
   } else {
     console.log(`${key}: ${process.env[key]}`);
@@ -165,18 +165,37 @@ DO NOT:
 // Enable JSON parsing for HTTP endpoints
 app.use(express.json());
 
+// Authentication middleware for API endpoints
+const authenticateRequest = (req, res, next) => {
+  // Get API key from request headers or query parameters
+  const apiKey = req.headers['x-api-key'] || req.query.api_key;
+  
+  console.log('Authenticating request:', req.path);
+  console.log('API Key provided:', apiKey ? 'Yes' : 'No');
+
+  // Check if API key is valid
+  if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
+    console.log('Authentication failed: Invalid or missing API key');
+    return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
+  }
+
+  console.log('Authentication successful');
+  // API key is valid, proceed
+  next();
+};
+
 // Define HTTP API endpoints
 app.get('/', (req, res) => {
   res.send('Botanist AI Voice Service is running');
 });
 
-// API endpoint to check health
+// API endpoint to check health (no auth required)
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Botanist AI Voice Service is healthy' });
 });
 
-// API endpoint for text-based interaction with the botanist (for non-WebSocket clients)
-app.post('/api/chat', async (req, res) => {
+// Apply authentication to protected endpoints
+app.post('/api/chat', authenticateRequest, async (req, res) => {
   try {
     const { message, sessionId, modelId } = req.body;
     
@@ -210,6 +229,35 @@ app.post('/api/chat', async (req, res) => {
     console.error('Error processing chat message:', error);
     res.status(500).json({ error: 'Failed to process message' });
   }
+});
+
+// WebSocket authentication function
+const authenticateWebSocket = (request) => {
+  // Extract API key from URL query parameter
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const apiKey = url.searchParams.get('api_key');
+  
+  // Check if API key is valid
+  if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
+    return false;
+  }
+  
+  return true;
+};
+
+// WebSocket server upgrade with authentication
+server.on('upgrade', (request, socket, head) => {
+  // Authenticate the WebSocket connection
+  if (!authenticateWebSocket(request)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  
+  // If authentication passes, upgrade the connection to WebSocket
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
 });
 
 // WebSocket event handlers
