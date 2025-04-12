@@ -197,7 +197,7 @@ app.get('/api/health', (req, res) => {
 // Apply authentication to protected endpoints
 app.post('/api/chat', authenticateRequest, async (req, res) => {
   try {
-    const { message, sessionId, modelId } = req.body;
+    const { message, sessionId, modelId, modelType, voice } = req.body;
     
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
@@ -211,20 +211,72 @@ app.post('/api/chat', authenticateRequest, async (req, res) => {
         id: newSessionId,
         conversationContext: [],
         modelId: modelId || 'gpt-4o',
+        modelType: modelType || 'openai',
+        voiceConfig: {
+          languageCode: 'en-US',
+          ssmlGender: 'FEMALE',
+          name: 'en-US-Neural2-F'
+        },
+        isResponseInterrupted: false
       };
       activeConnections.set(newSessionId, session);
-    } else if (modelId) {
-      session.modelId = modelId;
+    } else {
+      if (modelId) {
+        session.modelId = modelId;
+      }
+      if (modelType) {
+        session.modelType = modelType;
+      }
+    }
+    
+    // Handle voice configuration if provided
+    if (voice) {
+      if (typeof voice === 'object') {
+        session.voiceConfig = {
+          languageCode: voice.languageCode || 'en-US',
+          ssmlGender: voice.ssmlGender || 'FEMALE',
+          name: voice.name || 'en-US-Neural2-F'
+        };
+      } else if (typeof voice === 'string') {
+        // Extract language code from voice name (e.g., en-US from en-US-Neural2-F)
+        const langCodeMatch = voice.match(/^([a-z]{2}-[A-Z]{2})/);
+        
+        session.voiceConfig = {
+          languageCode: langCodeMatch ? langCodeMatch[1] : 'en-US',
+          ssmlGender: 'FEMALE', // Default
+          name: voice
+        };
+      }
     }
     
     // Process message
     const response = await processUserMessage(session, message);
     
-    // Return response
-    res.json({
+    // Generate audio response if requested
+    let audioResponse = null;
+    if (req.query.include_audio === 'true') {
+      audioResponse = await textToSpeech(response, session.voiceConfig);
+    }
+    
+    // Prepare response
+    const responseData = {
       sessionId: session.id,
-      message: response
-    });
+      message: response,
+      model: {
+        id: session.modelId,
+        type: session.modelType
+      }
+    };
+    
+    // Include audio if generated
+    if (audioResponse) {
+      responseData.audio = audioResponse.toString('base64');
+      responseData.audioFormat = 'mp3';
+      responseData.voice = session.voiceConfig.name;
+    }
+    
+    // Return response
+    res.json(responseData);
   } catch (error) {
     console.error('Error processing chat message:', error);
     res.status(500).json({ error: 'Failed to process message' });
@@ -271,7 +323,14 @@ wss.on('connection', (ws) => {
     ws,
     conversationContext: [],
     modelId: 'gpt-4o', // Default model
-    audioSession: false // Whether this session is using audio
+    modelType: 'openai', // Default model type
+    audioSession: false, // Whether this session is using audio
+    voiceConfig: {
+      languageCode: 'en-US',
+      ssmlGender: 'FEMALE',
+      name: 'en-US-Neural2-F'
+    }, // Default voice configuration
+    isResponseInterrupted: false // Track if response was interrupted
   };
   
   activeConnections.set(connectionId, connectionData);
@@ -294,10 +353,45 @@ wss.on('connection', (ws) => {
           if (data.modelId) {
             connectionData.modelId = data.modelId;
           }
+          if (data.modelType) {
+            connectionData.modelType = data.modelType;
+          }
           if (typeof data.audioSession === 'boolean') {
             connectionData.audioSession = data.audioSession;
           }
-          sendToClient(ws, { type: 'config_acknowledged' });
+          // Add voice configuration handling
+          if (data.voice) {
+            // If a complete voice config object is provided
+            if (typeof data.voice === 'object') {
+              connectionData.voiceConfig = {
+                languageCode: data.voice.languageCode || 'en-US',
+                ssmlGender: data.voice.ssmlGender || 'FEMALE',
+                name: data.voice.name || 'en-US-Neural2-F'
+              };
+            } 
+            // If just a voice name is provided
+            else if (typeof data.voice === 'string') {
+              connectionData.voiceConfig.name = data.voice;
+              
+              // Extract language code from voice name (e.g., en-US from en-US-Neural2-F)
+              const langCodeMatch = data.voice.match(/^([a-z]{2}-[A-Z]{2})/);
+              if (langCodeMatch) {
+                connectionData.voiceConfig.languageCode = langCodeMatch[1];
+              }
+            }
+          }
+          
+          // Reset interruption flag
+          connectionData.isResponseInterrupted = false;
+          
+          sendToClient(ws, { 
+            type: 'config_acknowledged',
+            voice: connectionData.voiceConfig,
+            model: {
+              id: connectionData.modelId,
+              type: connectionData.modelType
+            }
+          });
           break;
           
         case 'chat_message':
@@ -307,26 +401,33 @@ wss.on('connection', (ws) => {
             break;
           }
           
+          // Reset interruption flag when new message is received
+          connectionData.isResponseInterrupted = false;
+          
           logger.info(`Processing chat message from ${connectionId}: "${data.message}"`);
           const response = await processUserMessage(connectionData, data.message);
           
-          // Send response as text
-          sendToClient(ws, {
-            type: 'bot_message',
-            id: uuidv4(),
-            text: response
-          });
-          
-          // Convert to speech if audio session
-          if (connectionData.audioSession) {
-            const audioBuffer = await textToSpeech(response);
-            if (audioBuffer) {
-              sendToClient(ws, {
-                type: 'audio_message',
-                id: uuidv4(),
-                audio: audioBuffer.toString('base64'),
-                format: 'mp3'
-              });
+          // Only send response if not interrupted during processing
+          if (!connectionData.isResponseInterrupted) {
+            // Send response as text
+            sendToClient(ws, {
+              type: 'bot_message',
+              id: uuidv4(),
+              text: response
+            });
+            
+            // Convert to speech if audio session
+            if (connectionData.audioSession) {
+              const audioBuffer = await textToSpeech(response, connectionData.voiceConfig);
+              if (audioBuffer && !connectionData.isResponseInterrupted) {
+                sendToClient(ws, {
+                  type: 'audio_message',
+                  id: uuidv4(),
+                  audio: audioBuffer.toString('base64'),
+                  format: 'mp3',
+                  voice: connectionData.voiceConfig.name // Include voice info in response
+                });
+              }
             }
           }
           break;
@@ -338,6 +439,9 @@ wss.on('connection', (ws) => {
             break;
           }
           
+          // Reset interruption flag when new audio is received
+          connectionData.isResponseInterrupted = false;
+          
           // Process audio data (binary, base64, etc.)
           if (data.format === 'base64') {
             const audioBuffer = Buffer.from(data.audio, 'base64');
@@ -346,32 +450,39 @@ wss.on('connection', (ws) => {
             if (transcript) {
               logger.info(`Transcribed audio from ${connectionId}: "${transcript}"`);
               
-              // Process the transcript
-              const response = await processUserMessage(connectionData, transcript);
-              
               // Send transcript back to client
               sendToClient(ws, {
                 type: 'transcript',
                 text: transcript
               });
               
-              // Send response as text
-              sendToClient(ws, {
-                type: 'bot_message',
-                id: uuidv4(),
-                text: response
-              });
-              
-              // Convert to speech if audio session
-              if (connectionData.audioSession) {
-                const audioBuffer = await textToSpeech(response);
-                if (audioBuffer) {
+              // Only process if not interrupted
+              if (!connectionData.isResponseInterrupted) {
+                // Process the transcript
+                const response = await processUserMessage(connectionData, transcript);
+                
+                // Only send response if not interrupted during processing
+                if (!connectionData.isResponseInterrupted) {
+                  // Send response as text
                   sendToClient(ws, {
-                    type: 'audio_message',
+                    type: 'bot_message',
                     id: uuidv4(),
-                    audio: audioBuffer.toString('base64'),
-                    format: 'mp3'
+                    text: response
                   });
+                  
+                  // Convert to speech if audio session
+                  if (connectionData.audioSession) {
+                    const audioBuffer = await textToSpeech(response, connectionData.voiceConfig);
+                    if (audioBuffer && !connectionData.isResponseInterrupted) {
+                      sendToClient(ws, {
+                        type: 'audio_message',
+                        id: uuidv4(),
+                        audio: audioBuffer.toString('base64'),
+                        format: 'mp3',
+                        voice: connectionData.voiceConfig.name // Include voice info in response
+                      });
+                    }
+                  }
                 }
               }
             } else {
@@ -380,6 +491,19 @@ wss.on('connection', (ws) => {
           } else {
             sendError(ws, 'Unsupported audio format');
           }
+          break;
+          
+        case 'interrupt':
+          // Handle user interruption
+          logger.info(`User interrupted assistant response for session ${connectionId}`);
+          
+          // Set flag to prevent sending further responses from in-flight requests
+          connectionData.isResponseInterrupted = true;
+          
+          // Acknowledge the interruption
+          sendToClient(ws, {
+            type: 'interrupt_acknowledged'
+          });
           break;
           
         default:
@@ -423,9 +547,15 @@ async function processUserMessage(session, userMessage) {
     
     let assistantResponse = '';
 
-    // Use Gemini if configured, otherwise use OpenAI
-    if (useGemini) {
-      assistantResponse = await getGeminiResponse(session.conversationContext, BOTANIST_SYSTEM_PROMPT);
+    // Check if the session was interrupted during processing
+    if (session.isResponseInterrupted) {
+      logger.info('Message processing interrupted - skipping LLM call');
+      return '';
+    }
+
+    // Use Gemini if configured as model type, otherwise use OpenAI
+    if (session.modelType === 'gemini') {
+      assistantResponse = await getGeminiResponse(session.conversationContext, BOTANIST_SYSTEM_PROMPT, session.modelId);
     } else {
       // Prepare messages for OpenAI LLM
       const messages = [
@@ -447,6 +577,12 @@ async function processUserMessage(session, userMessage) {
       
       // Process streamed response
       for await (const chunk of response) {
+        // Check if interrupted during streaming
+        if (session.isResponseInterrupted) {
+          logger.info('Response streaming interrupted');
+          break;
+        }
+        
         const content = chunk.choices[0]?.delta?.content || '';
         if (content) {
           assistantResponse += content;
@@ -454,13 +590,17 @@ async function processUserMessage(session, userMessage) {
       }
     }
     
-    // Add assistant response to conversation context
-    session.conversationContext.push({
-      role: 'assistant',
-      content: assistantResponse,
-    });
+    // Only add to conversation context if not interrupted
+    if (!session.isResponseInterrupted) {
+      // Add assistant response to conversation context
+      session.conversationContext.push({
+        role: 'assistant',
+        content: assistantResponse,
+      });
+      
+      logger.info(`Assistant response: "${assistantResponse}"`);
+    }
     
-    logger.info(`Assistant response: "${assistantResponse}"`);
     return assistantResponse;
   } catch (error) {
     logger.error('Error processing user message:', error);
@@ -471,7 +611,7 @@ async function processUserMessage(session, userMessage) {
 /**
  * Get response from Gemini API
  */
-async function getGeminiResponse(conversationContext, systemPrompt) {
+async function getGeminiResponse(conversationContext, systemPrompt, modelId) {
   try {
     // Create content parts with system prompt
     const parts = [
@@ -482,6 +622,10 @@ async function getGeminiResponse(conversationContext, systemPrompt) {
     for (const message of conversationContext) {
       parts.push({ text: `${message.role}: ${message.content}` });
     }
+    
+    // Use the specified model ID or default to gemini-1.5-pro
+    const geminiModel = modelId || 'gemini-1.5-pro';
+    const geminiApiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent`;
     
     // Prepare request for Gemini API
     const requestBody = {
@@ -497,7 +641,7 @@ async function getGeminiResponse(conversationContext, systemPrompt) {
     };
     
     // Call Gemini API
-    const response = await fetch(`${geminiApiUrl}?key=${process.env.GEMINI_API_KEY}`, {
+    const response = await fetch(`${geminiApiEndpoint}?key=${process.env.GEMINI_API_KEY}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -526,12 +670,19 @@ async function getGeminiResponse(conversationContext, systemPrompt) {
 /**
  * Convert text to speech and return audio buffer
  */
-async function textToSpeech(text) {
+async function textToSpeech(text, voiceConfig = null) {
   try {
+    // Use provided voice config or default
+    const voice = voiceConfig || {
+      languageCode: 'en-US',
+      ssmlGender: 'FEMALE',
+      name: 'en-US-Neural2-F'
+    };
+    
     // Request text-to-speech from Google
     const [response] = await ttsClient.synthesizeSpeech({
       input: { text },
-      voice: { languageCode: 'en-US', ssmlGender: 'FEMALE', name: 'en-US-Neural2-F' },
+      voice: voice,
       audioConfig: { audioEncoding: 'MP3' },
     });
     
@@ -599,6 +750,53 @@ function sendError(ws, errorMessage) {
     error: errorMessage,
   });
 }
+
+// Add new API endpoints for voice management
+
+// 1. List available voices
+app.get('/api/list-voices', authenticateRequest, async (req, res) => {
+  try {
+    const [result] = await ttsClient.listVoices({});
+    res.json(result.voices);
+  } catch (error) {
+    logger.error('Error listing voices:', error);
+    res.status(500).json({ error: 'Failed to list voices' });
+  }
+});
+
+// 2. Preview a voice
+app.get('/api/preview-voice', authenticateRequest, async (req, res) => {
+  try {
+    const { voiceName, text } = req.query;
+    
+    if (!voiceName || !text) {
+      return res.status(400).json({ error: 'Voice name and text are required' });
+    }
+    
+    // Extract language code from voice name (e.g., en-US from en-US-Neural2-F)
+    const langCodeMatch = voiceName.match(/^([a-z]{2}-[A-Z]{2})/);
+    const languageCode = langCodeMatch ? langCodeMatch[1] : 'en-US';
+    
+    const voiceConfig = {
+      languageCode: languageCode,
+      name: voiceName
+    };
+    
+    const audioBuffer = await textToSpeech(text, voiceConfig);
+    
+    if (audioBuffer) {
+      res.json({
+        audio: audioBuffer.toString('base64'),
+        format: 'mp3'
+      });
+    } else {
+      res.status(500).json({ error: 'Failed to generate audio' });
+    }
+  } catch (error) {
+    logger.error('Error previewing voice:', error);
+    res.status(500).json({ error: 'Failed to preview voice' });
+  }
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
