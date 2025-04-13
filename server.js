@@ -757,11 +757,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         encoding: encoding,
         sampleRateHertz: sampleRateHertz,
         languageCode: detectedLanguageCode,
-        model: 'default',
-        useEnhanced: true,
-        enableAutomaticPunctuation: true,
-        audioChannelCount: 1, // Assume mono for voice recording
-        profanityFilter: false,
+        // Keep only essential parameters, remove all potentially problematic ones
       },
     };
     
