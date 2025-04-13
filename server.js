@@ -323,7 +323,9 @@ wss.on('connection', (ws) => {
       ssmlGender: 'MALE',
       name: 'en-IN-Chirp3-HD-Orus'
     }, // Default voice configuration
-    isResponseInterrupted: false // Track if response was interrupted
+    isResponseInterrupted: false, // Track if response was interrupted
+    audioChunks: [], // Store audio chunks
+    lastChunkTime: Date.now() // Track when the last chunk was received
   };
   
   activeConnections.set(connectionId, connectionData);
@@ -437,54 +439,42 @@ wss.on('connection', (ws) => {
           
           // Process audio data (binary, base64, etc.)
           if (data.format === 'base64') {
-            const audioBuffer = Buffer.from(data.audio, 'base64');
-            // Pass the language code from the current voice config and the mime type
-            const transcript = await speechToText(
-              audioBuffer, 
-              connectionData.voiceConfig.languageCode, 
-              data.mimeType || 'audio/mp3'
-            );
-            
-            if (transcript) {
-              logger.info(`Transcribed audio from ${connectionId}: "${transcript}"`);
+            // Check if this is chunked audio
+            if (data.isChunk) {
+              logger.info(`Received audio chunk ${data.chunkNumber} from ${connectionId}`);
               
-              // Send transcript back to client
-              sendToClient(ws, {
-                type: 'transcript',
-                text: transcript
-              });
+              // Handle the first chunk of a new audio stream
+              if (data.chunkNumber === 0 || data.chunkNumber === 1) {
+                // Clear previous chunks if this is the start of a new utterance
+                connectionData.audioChunks = [];
+              }
               
-              // Only process if not interrupted
-              if (!connectionData.isResponseInterrupted) {
-                // Process the transcript
-                const response = await processUserMessage(connectionData, transcript);
+              // Store this chunk
+              connectionData.audioChunks.push(data.audio);
+              connectionData.lastChunkTime = Date.now();
+              
+              // If this appears to be the final chunk or we have enough chunks, process the audio
+              const isLastChunk = data.isLastChunk === true;
+              const haveEnoughData = connectionData.audioChunks.length >= 10;
+              
+              if (isLastChunk || haveEnoughData) {
+                // Combine all chunks
+                const combinedAudio = connectionData.audioChunks.join('');
+                const audioBuffer = Buffer.from(combinedAudio, 'base64');
                 
-                // Only send response if not interrupted during processing
-                if (!connectionData.isResponseInterrupted) {
-                  // Send response as text
-                  sendToClient(ws, {
-                    type: 'bot_message',
-                    id: uuidv4(),
-                    text: response
-                  });
-                  
-                  // Convert to speech if audio session
-                  if (connectionData.audioSession) {
-                    const audioBuffer = await textToSpeech(response, connectionData.voiceConfig);
-                    if (audioBuffer && !connectionData.isResponseInterrupted) {
-                      sendToClient(ws, {
-                        type: 'audio_message',
-                        id: uuidv4(),
-                        audio: audioBuffer.toString('base64'),
-                        format: 'mp3',
-                        voice: connectionData.voiceConfig.name // Include voice info in response
-                      });
-                    }
-                  }
-                }
+                // Process the complete audio
+                await processAudioData(connectionData, audioBuffer, data.mimeType || 'audio/webm;codecs=opus');
+                
+                // Clear the chunks
+                connectionData.audioChunks = [];
+              } else {
+                // If it's not the last chunk and we don't have enough data yet, just wait for more
+                logger.debug(`Waiting for more audio chunks from ${connectionId}`);
               }
             } else {
-              sendError(ws, 'Could not transcribe audio');
+              // This is a complete audio sample (not chunked)
+              const audioBuffer = Buffer.from(data.audio, 'base64');
+              await processAudioData(connectionData, audioBuffer, data.mimeType || 'audio/mp3');
             }
           } else {
             sendError(ws, 'Unsupported audio format');
@@ -726,17 +716,30 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     
     // Determine encoding based on mime type
     let encoding = 'MP3';
-    if (mimeType && mimeType.includes('webm')) {
+    let sampleRateHertz = 48000;
+    
+    // WebM with Opus codec specific settings
+    if (mimeType && mimeType.includes('webm') && mimeType.includes('opus')) {
+      encoding = 'WEBM_OPUS';
+      sampleRateHertz = 48000;  // Use 48kHz as it's common for WebM/Opus
+      logger.info(`Detected WebM/Opus audio format, using WEBM_OPUS encoding at ${sampleRateHertz}Hz`);
+    } 
+    // Regular WebM (without opus) settings
+    else if (mimeType && mimeType.includes('webm')) {
       encoding = 'WEBM_OPUS';
       logger.info(`Detected WebM audio format, using WEBM_OPUS encoding`);
-    } else if (mimeType && mimeType.includes('wav')) {
+    } 
+    // WAV audio settings
+    else if (mimeType && mimeType.includes('wav')) {
       encoding = 'LINEAR16';
       logger.info(`Detected WAV audio format, using LINEAR16 encoding`);
-    } else {
+    } 
+    // Default MP3 settings
+    else {
       logger.info(`Using default MP3 encoding`);
     }
     
-    logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}`);
+    logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}, sample rate: ${sampleRateHertz}Hz`);
     
     // Create the request
     const request = {
@@ -745,26 +748,38 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       },
       config: {
         encoding: encoding,
-        sampleRateHertz: 48000,
+        sampleRateHertz: sampleRateHertz,
         languageCode: detectedLanguageCode,
         model: 'default',
         useEnhanced: true,
         enableAutomaticPunctuation: true,
         enableSpokenPunctuation: true,
+        audioChannelCount: 1, // Assume mono for voice recording
+        profanityFilter: false,
       },
     };
     
     // Perform the speech recognition
     const [response] = await speechClient.recognize(request);
     
+    if (!response || !response.results || response.results.length === 0) {
+      logger.warn('Speech recognition returned no results');
+      return null;
+    }
+    
     // Get the transcription from the response
     const transcription = response.results
       .map(result => result.alternatives[0].transcript)
       .join('\n');
     
+    logger.info(`Speech recognition successful: "${transcription}"`);
     return transcription;
   } catch (error) {
     logger.error('Error in speech-to-text:', error);
+    // Log more details about the error
+    if (error.details) {
+      logger.error('Error details:', error.details);
+    }
     return null;
   }
 }
@@ -860,6 +875,65 @@ app.get('/api/preview-voice', authenticateRequest, async (req, res) => {
     res.status(500).json({ error: 'Failed to preview voice' });
   }
 });
+
+/**
+ * Process complete audio data for transcription and response
+ */
+async function processAudioData(connectionData, audioBuffer, mimeType) {
+  try {
+    // Pass the language code from the current voice config and the mime type
+    const transcript = await speechToText(
+      audioBuffer,
+      connectionData.voiceConfig.languageCode,
+      mimeType
+    );
+    
+    if (transcript) {
+      logger.info(`Transcribed audio from ${connectionData.id}: "${transcript}"`);
+      
+      // Send transcript back to client
+      sendToClient(connectionData.ws, {
+        type: 'transcript',
+        text: transcript
+      });
+      
+      // Only process if not interrupted
+      if (!connectionData.isResponseInterrupted) {
+        // Process the transcript
+        const response = await processUserMessage(connectionData, transcript);
+        
+        // Only send response if not interrupted during processing
+        if (!connectionData.isResponseInterrupted) {
+          // Send response as text
+          sendToClient(connectionData.ws, {
+            type: 'bot_message',
+            id: uuidv4(),
+            text: response
+          });
+          
+          // Convert to speech if audio session
+          if (connectionData.audioSession) {
+            const audioBuffer = await textToSpeech(response, connectionData.voiceConfig);
+            if (audioBuffer && !connectionData.isResponseInterrupted) {
+              sendToClient(connectionData.ws, {
+                type: 'audio_message',
+                id: uuidv4(),
+                audio: audioBuffer.toString('base64'),
+                format: 'mp3',
+                voice: connectionData.voiceConfig.name // Include voice info in response
+              });
+            }
+          }
+        }
+      }
+    } else {
+      sendError(connectionData.ws, 'Could not transcribe audio');
+    }
+  } catch (error) {
+    logger.error('Error processing audio data:', error);
+    sendError(connectionData.ws, 'Failed to process audio data');
+  }
+}
 
 // Start the server
 const PORT = process.env.PORT || 3000;
