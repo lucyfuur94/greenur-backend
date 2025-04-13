@@ -81,7 +81,9 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
 // Initialize Express app
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+
+// Create WebSocket server (without attaching it to HTTP server directly)
+const wss = new WebSocket.Server({ noServer: true });
 
 // Initialize OpenAI
 const openai = new OpenAI({
@@ -288,7 +290,7 @@ const authenticateWebSocket = (request) => {
   return true;
 };
 
-// WebSocket server upgrade with authentication
+// WebSocket server upgrade with authentication - single handler approach
 server.on('upgrade', (request, socket, head) => {
   // Authenticate the WebSocket connection
   if (!authenticateWebSocket(request)) {
@@ -308,6 +310,21 @@ wss.on('connection', (ws) => {
   const connectionId = uuidv4();
   logger.info(`New WebSocket connection established: ${connectionId}`);
   
+  // Set heartbeat interval
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+      logger.debug(`Sent ping to client: ${connectionId}`);
+    } else {
+      clearInterval(pingInterval);
+    }
+  }, 10000); // Send ping every 10 seconds
+
+  // Handle pong response
+  ws.on('pong', () => {
+    logger.debug(`Received pong from client: ${connectionId}`);
+  });
+  
   // Store connection data
   const connectionData = {
     id: connectionId,
@@ -321,7 +338,8 @@ wss.on('connection', (ws) => {
       ssmlGender: 'MALE',
       name: 'en-IN-Chirp3-HD-Orus'
     }, // Default voice configuration
-    isResponseInterrupted: false // Track if response was interrupted
+    isResponseInterrupted: false, // Track if response was interrupted
+    pingInterval: pingInterval // Store interval for cleanup
   };
   
   activeConnections.set(connectionId, connectionData);
@@ -339,6 +357,12 @@ wss.on('connection', (ws) => {
       logger.debug(`Received message from ${connectionId}:`, data.type);
       
       switch (data.type) {
+        case 'ping':
+          // Handle ping message from client
+          logger.debug(`Received ping from client: ${connectionId}`);
+          sendToClient(ws, { type: 'pong' });
+          break;
+        
         case 'config':
           // Handle configuration updates
           if (data.modelId) {
@@ -511,12 +535,22 @@ wss.on('connection', (ws) => {
   // Handle WebSocket disconnection
   ws.on('close', () => {
     logger.info(`WebSocket connection closed: ${connectionId}`);
+    // Clean up ping interval
+    const connection = activeConnections.get(connectionId);
+    if (connection && connection.pingInterval) {
+      clearInterval(connection.pingInterval);
+    }
     activeConnections.delete(connectionId);
   });
   
   // Handle WebSocket errors
   ws.on('error', (error) => {
     logger.error(`WebSocket error for ${connectionId}:`, error);
+    // Clean up ping interval
+    const connection = activeConnections.get(connectionId);
+    if (connection && connection.pingInterval) {
+      clearInterval(connection.pingInterval);
+    }
     activeConnections.delete(connectionId);
   });
 });
@@ -701,7 +735,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN') {
     const audioBytes = audioBuffer.toString('base64');
     
     // Determine language code based on the provided voice language
-    let detectedLanguageCode = 'en-IN'; // Default to Indian English
+    let detectedLanguageCode = 'en-US'; // Default to US English
     
     if (languageCode) {
       // If a Hindi voice is being used, set to Hindi
