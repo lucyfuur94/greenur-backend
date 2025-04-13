@@ -865,7 +865,12 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     if (mimeType) {
       const lowercaseMimeType = mimeType.toLowerCase();
       
-      if (lowercaseMimeType.includes('flac')) {
+      if (lowercaseMimeType.includes('webm')) {
+        encoding = 'OGG_OPUS';  // WebM typically contains Opus audio
+        sampleRateHertz = 48000; // Use the standard WebM sample rate
+        logger.info(`Using OGG_OPUS encoding with sample rate ${sampleRateHertz}Hz for WebM`);
+      }
+      else if (lowercaseMimeType.includes('flac')) {
         encoding = 'FLAC';
         
         // Check FLAC signature
