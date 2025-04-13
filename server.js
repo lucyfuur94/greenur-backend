@@ -741,7 +741,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     
     logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}, sample rate: ${sampleRateHertz}Hz`);
     
-    // Create the request
+    // Create the request with correct parameter types
     const request = {
       audio: {
         content: audioBytes,
@@ -753,7 +753,6 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         model: 'default',
         useEnhanced: true,
         enableAutomaticPunctuation: true,
-        enableSpokenPunctuation: true,
         audioChannelCount: 1, // Assume mono for voice recording
         profanityFilter: false,
       },
