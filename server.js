@@ -59,7 +59,7 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
     
     // Only exit in production
     if (process.env.NODE_ENV === 'production') {
-      process.exit(1);
+    process.exit(1);
     } else {
       console.log('Development environment detected - operations requiring Google credentials may fail');
     }
@@ -388,6 +388,9 @@ wss.on('connection', (ws) => {
                 ssmlGender: data.voice.ssmlGender || 'MALE',
                 name: data.voice.name || 'en-IN-Chirp3-HD-Orus'
               };
+              
+              // Log the updated voice configuration
+              logger.info(`Updated voice config from object: ${JSON.stringify(connectionData.voiceConfig)}`);
             } 
             // If just a voice name is provided
             else if (typeof data.voice === 'string') {
@@ -397,6 +400,7 @@ wss.on('connection', (ws) => {
               const langCodeMatch = data.voice.match(/^([a-z]{2}-[A-Z]{2})/);
               if (langCodeMatch) {
                 connectionData.voiceConfig.languageCode = langCodeMatch[1];
+                logger.info(`Updated voice language code to ${connectionData.voiceConfig.languageCode} from voice name ${data.voice}`);
               }
             }
           }
@@ -472,29 +476,44 @@ wss.on('connection', (ws) => {
               if (data.chunkNumber === 0 || data.chunkNumber === 1) {
                 // Clear previous chunks if this is the start of a new utterance
                 connectionData.audioChunks = [];
+                connectionData.audioBatchMimeType = data.mimeType || 'audio/mp3';
               }
               
               // Store this chunk
               connectionData.audioChunks.push(data.audio);
               connectionData.lastChunkTime = Date.now();
               
-              // If this appears to be the final chunk or we have enough chunks, process the audio
+              // For FLAC files, we need the complete file before processing
+              const isFlacAudio = (data.mimeType && data.mimeType.toLowerCase().includes('flac'));
+              
+              // If this appears to be the final chunk or we have enough chunks (and not FLAC), process the audio
               const isLastChunk = data.isLastChunk === true;
               const haveEnoughData = connectionData.audioChunks.length >= 10;
               
-              if (isLastChunk || haveEnoughData) {
+              if (isLastChunk || (haveEnoughData && !isFlacAudio)) {
                 // Combine all chunks
                 const combinedAudio = connectionData.audioChunks.join('');
                 const audioBuffer = Buffer.from(combinedAudio, 'base64');
                 
                 // Process the complete audio
-                await processAudioData(connectionData, audioBuffer, data.mimeType || 'audio/webm;codecs=opus');
+                await processAudioData(connectionData, audioBuffer, connectionData.audioBatchMimeType);
+                
+                // Clear the chunks
+                connectionData.audioChunks = [];
+              } else if (isFlacAudio && isLastChunk) {
+                // For FLAC files, only process when we have the complete file
+                logger.info(`Processing complete FLAC file from ${connectionId}`);
+                const combinedAudio = connectionData.audioChunks.join('');
+                const audioBuffer = Buffer.from(combinedAudio, 'base64');
+                
+                // Process the complete FLAC audio
+                await processAudioData(connectionData, audioBuffer, connectionData.audioBatchMimeType);
                 
                 // Clear the chunks
                 connectionData.audioChunks = [];
               } else {
                 // If it's not the last chunk and we don't have enough data yet, just wait for more
-                logger.debug(`Waiting for more audio chunks from ${connectionId}`);
+                logger.debug(`Waiting for more audio chunks from ${connectionId} (have ${connectionData.audioChunks.length})`);
               }
             } else {
               // This is a complete audio sample (not chunked)
@@ -605,12 +624,12 @@ async function processUserMessage(session, userMessage) {
     
     // Only add to conversation context if not interrupted
     if (!session.isResponseInterrupted) {
-      // Add assistant response to conversation context
+    // Add assistant response to conversation context
       session.conversationContext.push({
-        role: 'assistant',
-        content: assistantResponse,
-      });
-      
+      role: 'assistant',
+      content: assistantResponse,
+    });
+    
       logger.info(`Assistant response: "${assistantResponse}"`);
     }
     
@@ -714,12 +733,107 @@ async function textToSpeech(text, voiceConfig) {
 }
 
 /**
+ * Process complete audio data for transcription and response
+ */
+async function processAudioData(connectionData, audioBuffer, mimeType) {
+  try {
+    // Log the current voice configuration for debugging
+    logger.info(`Processing audio with voice config: ${JSON.stringify(connectionData.voiceConfig)}`);
+    logger.info(`Audio buffer type: ${typeof audioBuffer}, size: ${audioBuffer.length} bytes, mime type: ${mimeType}`);
+    
+    // Debug check - verify the buffer is valid
+    if (!audioBuffer || audioBuffer.length === 0) {
+      logger.error('Audio buffer is empty or invalid');
+      sendError(connectionData.ws, 'Invalid audio data received');
+      return;
+    }
+    
+    // Debug check for FLAC files
+    if (mimeType && mimeType.toLowerCase().includes('flac')) {
+      logger.info('Processing FLAC audio file');
+      // Check for FLAC magic number (first 4 bytes should be "fLaC")
+      if (audioBuffer.length >= 4) {
+        const magicBytes = audioBuffer.slice(0, 4).toString('utf8');
+        logger.info(`FLAC magic bytes: "${magicBytes}" (should be "fLaC")`);
+        if (magicBytes !== 'fLaC') {
+          logger.warn('Invalid FLAC file format - missing FLAC signature');
+        }
+      } else {
+        logger.warn('FLAC file too small - insufficient data');
+      }
+    }
+    
+    // Pass the language code from the current voice config and the mime type
+    const transcript = await speechToText(
+      audioBuffer,
+      connectionData.voiceConfig.languageCode,
+      mimeType
+    );
+    
+    if (transcript) {
+      logger.info(`Transcribed audio from ${connectionData.id}: "${transcript}"`);
+      
+      // Send transcript back to client
+      sendToClient(connectionData.ws, {
+        type: 'transcript',
+        text: transcript
+      });
+      
+      // Only process if not interrupted
+      if (!connectionData.isResponseInterrupted) {
+        // Process the transcript
+        const response = await processUserMessage(connectionData, transcript);
+        
+        // Only send response if not interrupted during processing
+        if (!connectionData.isResponseInterrupted) {
+          // Send response as text
+          sendToClient(connectionData.ws, {
+            type: 'bot_message',
+            id: uuidv4(),
+            text: response
+          });
+          
+          // Convert to speech if audio session
+          if (connectionData.audioSession) {
+            const audioBuffer = await textToSpeech(response, connectionData.voiceConfig);
+            if (audioBuffer && !connectionData.isResponseInterrupted) {
+              sendToClient(connectionData.ws, {
+                type: 'audio_message',
+                id: uuidv4(),
+                audio: audioBuffer.toString('base64'),
+                format: 'mp3',
+                voice: connectionData.voiceConfig.name // Include voice info in response
+              });
+            }
+          }
+        }
+      }
+    } else {
+      logger.error('Failed to transcribe audio - null transcript returned');
+      sendError(connectionData.ws, 'Could not transcribe audio');
+    }
+  } catch (error) {
+    logger.error('Error processing audio data:', error);
+    if (error.stack) {
+      logger.error('Stack trace:', error.stack);
+    }
+    sendError(connectionData.ws, 'Failed to process audio data');
+  }
+}
+
+/**
  * Convert speech to text
  */
 async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'audio/mp3') {
   try {
     // Convert the audio buffer to a base64-encoded string
     const audioBytes = audioBuffer.toString('base64');
+    
+    // Log the audio buffer size for debugging
+    logger.info(`Audio buffer size: ${audioBuffer.length} bytes, mime type: ${mimeType}`);
+    
+    // More detailed buffer inspection
+    logger.info(`Buffer starts with: ${audioBuffer.slice(0, 20).toString('hex')}`);
     
     // Determine language code based on the provided voice language
     let detectedLanguageCode = 'en-US'; // Default to US English
@@ -728,21 +842,24 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       // If a Hindi voice is being used, set to Hindi
       if (languageCode.startsWith('hi-')) {
         detectedLanguageCode = 'hi-IN';
+        logger.info(`Hindi voice detected, using language code: ${detectedLanguageCode}`);
       } 
-      // If it's Indian English, use en-IN
+      // If it's Indian English, use en-US for better recognition accuracy
       else if (languageCode === 'en-IN') {
-        detectedLanguageCode = 'en-IN';
+        detectedLanguageCode = 'en-US';
+        logger.info(`Indian English voice detected, using language code: ${detectedLanguageCode} for better recognition`);
       }
       // Otherwise use the provided language code
       else {
         detectedLanguageCode = languageCode;
+        logger.info(`Using provided language code: ${detectedLanguageCode}`);
       }
     }
     
     // Determine encoding based on mime type - only use supported formats
     // SUPPORTED FORMATS: LINEAR16, FLAC, MULAW, AMR, AMR_WB, OGG_OPUS, SPEEX_WITH_HEADER_BYTE
     let encoding = 'LINEAR16'; // Default to LINEAR16
-    let sampleRateHertz = 16000; // Default sample rate
+    let sampleRateHertz = 16000;
     
     // Map MIME types to Google Speech API encoding values
     if (mimeType) {
@@ -750,8 +867,28 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       
       if (lowercaseMimeType.includes('flac')) {
         encoding = 'FLAC';
-        logger.info(`Using FLAC encoding`);
-      } 
+        
+        // Check FLAC signature
+        let hasValidFlacSignature = false;
+        if (audioBuffer.length >= 4) {
+          const flacSignature = audioBuffer.slice(0, 4).toString();
+          logger.info(`FLAC signature in buffer: ${flacSignature}`);
+          if (flacSignature === 'fLaC') {
+            hasValidFlacSignature = true;
+          }
+        }
+        
+        // Always set a sample rate for FLAC to avoid "bad sample rate hertz" error
+        // For chunked FLAC files that might not have proper headers
+        if (!hasValidFlacSignature) {
+          sampleRateHertz = 16000; // Default to 16kHz
+          logger.info(`Using FLAC encoding with explicit sample rate of ${sampleRateHertz}Hz because valid FLAC signature not found`);
+        } else {
+          // If it has a valid signature, let Google detect the rate from the header
+          sampleRateHertz = undefined;
+          logger.info(`Using FLAC encoding with automatic sample rate detection`);
+        }
+      }
       else if (lowercaseMimeType.includes('mulaw')) {
         encoding = 'MULAW';
         logger.info(`Using MULAW encoding`);
@@ -788,7 +925,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       }
     }
     
-    logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}, sample rate: ${sampleRateHertz}Hz`);
+    logger.info(`Speech recognition config: language=${detectedLanguageCode}, encoding=${encoding}, sample rate=${sampleRateHertz || 'auto'}`);
     
     // Create the request with correct parameter types
     const request = {
@@ -797,7 +934,6 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       },
       config: {
         encoding: encoding,
-        sampleRateHertz: sampleRateHertz,
         languageCode: detectedLanguageCode,
         model: 'default',
         useEnhanced: true,
@@ -806,8 +942,28 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       },
     };
     
+    // For Hindi/English speakers, add alternative language code to improve mixed content recognition
+    if (detectedLanguageCode === 'hi-IN') {
+      // Add English as alternative language for Hindi speakers who may mix English words
+      request.config.alternativeLanguageCodes = ['en-US', 'en-IN'];
+      logger.info('Added English as alternative language for Hindi speech recognition');
+    } else if (detectedLanguageCode === 'en-US' || detectedLanguageCode === 'en-IN') {
+      // Add Hindi as alternative language for English speakers who may mix Hindi words
+      request.config.alternativeLanguageCodes = ['hi-IN'];
+      logger.info('Added Hindi as alternative language for English speech recognition');
+    }
+    
+    // Only set sample rate if it's defined (needed for most formats but not for FLAC)
+    if (sampleRateHertz !== undefined) {
+      request.config.sampleRateHertz = sampleRateHertz;
+    }
+    
     // Perform the speech recognition
+    logger.info('Sending request to Google Speech-to-Text API...');
     const [response] = await speechClient.recognize(request);
+    
+    // Log response for debugging
+    logger.info(`Speech recognition response: ${JSON.stringify(response, null, 2)}`);
     
     if (!response || !response.results || response.results.length === 0) {
       logger.warn('Speech recognition returned no results');
@@ -826,6 +982,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     // Log more details about the error
     if (error.details) {
       logger.error('Error details:', error.details);
+    }
+    if (error.code) {
+      logger.error(`Error code: ${error.code}`);
     }
     return null;
   }
@@ -923,67 +1082,8 @@ app.get('/api/preview-voice', authenticateRequest, async (req, res) => {
   }
 });
 
-/**
- * Process complete audio data for transcription and response
- */
-async function processAudioData(connectionData, audioBuffer, mimeType) {
-  try {
-    // Pass the language code from the current voice config and the mime type
-    const transcript = await speechToText(
-      audioBuffer,
-      connectionData.voiceConfig.languageCode,
-      mimeType
-    );
-    
-    if (transcript) {
-      logger.info(`Transcribed audio from ${connectionData.id}: "${transcript}"`);
-      
-      // Send transcript back to client
-      sendToClient(connectionData.ws, {
-        type: 'transcript',
-        text: transcript
-      });
-      
-      // Only process if not interrupted
-      if (!connectionData.isResponseInterrupted) {
-        // Process the transcript
-        const response = await processUserMessage(connectionData, transcript);
-        
-        // Only send response if not interrupted during processing
-        if (!connectionData.isResponseInterrupted) {
-          // Send response as text
-          sendToClient(connectionData.ws, {
-            type: 'bot_message',
-            id: uuidv4(),
-            text: response
-          });
-          
-          // Convert to speech if audio session
-          if (connectionData.audioSession) {
-            const audioBuffer = await textToSpeech(response, connectionData.voiceConfig);
-            if (audioBuffer && !connectionData.isResponseInterrupted) {
-              sendToClient(connectionData.ws, {
-                type: 'audio_message',
-                id: uuidv4(),
-                audio: audioBuffer.toString('base64'),
-                format: 'mp3',
-                voice: connectionData.voiceConfig.name // Include voice info in response
-              });
-            }
-          }
-        }
-      }
-    } else {
-      sendError(connectionData.ws, 'Could not transcribe audio');
-    }
-  } catch (error) {
-    logger.error('Error processing audio data:', error);
-    sendError(connectionData.ws, 'Failed to process audio data');
-  }
-}
-
 // Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   logger.info(`Botanist AI Voice MCP Server running on port ${PORT}`);
-}); 
+});
