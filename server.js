@@ -714,20 +714,20 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       }
     }
     
-    // Determine encoding based on mime type
+    // Determine encoding based on mime type - use proper Google Speech API values
     let encoding = 'MP3';
     let sampleRateHertz = 48000;
     
     // WebM with Opus codec specific settings
     if (mimeType && mimeType.includes('webm') && mimeType.includes('opus')) {
-      encoding = 'WEBM_OPUS';
-      sampleRateHertz = 48000;  // Use 48kHz as it's common for WebM/Opus
-      logger.info(`Detected WebM/Opus audio format, using WEBM_OPUS encoding at ${sampleRateHertz}Hz`);
+      encoding = 'OGG_OPUS';
+      sampleRateHertz = 48000;
+      logger.info(`Detected WebM/Opus audio format, using OGG_OPUS encoding at ${sampleRateHertz}Hz`);
     } 
     // Regular WebM (without opus) settings
     else if (mimeType && mimeType.includes('webm')) {
-      encoding = 'WEBM_OPUS';
-      logger.info(`Detected WebM audio format, using WEBM_OPUS encoding`);
+      encoding = 'OGG_OPUS';
+      logger.info(`Detected WebM audio format, using OGG_OPUS encoding`);
     } 
     // WAV audio settings
     else if (mimeType && mimeType.includes('wav')) {
@@ -735,8 +735,15 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       logger.info(`Detected WAV audio format, using LINEAR16 encoding`);
     } 
     // Default MP3 settings
+    else if (mimeType && mimeType.includes('mp3')) {
+      encoding = 'MP3';
+      logger.info(`Detected MP3 audio format`);
+    }
+    // Default options if we can't determine the format
     else {
-      logger.info(`Using default MP3 encoding`);
+      // Default to FLAC as it's widely supported
+      encoding = 'FLAC';
+      logger.info(`Using default FLAC encoding as fallback`);
     }
     
     logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}, sample rate: ${sampleRateHertz}Hz`);
@@ -757,6 +764,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         profanityFilter: false,
       },
     };
+    
+    // Log the request configuration for debugging
+    logger.debug(`Speech recognition request config: ${JSON.stringify(request.config, null, 2)}`);
     
     // Perform the speech recognition
     const [response] = await speechClient.recognize(request);
