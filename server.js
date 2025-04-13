@@ -714,8 +714,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       }
     }
     
-    // Determine encoding based on mime type - use proper Google Speech API values
-    let encoding = 'MP3';
+    // Determine encoding based on mime type - use valid values from Google Speech API
+    // Valid encodings: LINEAR16, FLAC, MULAW, AMR, AMR_WB, OGG_OPUS, SPEEX_WITH_HEADER_BYTE
+    let encoding = 'FLAC'; // Default to FLAC as it's commonly supported
     let sampleRateHertz = 48000;
     
     // WebM with Opus codec specific settings
@@ -734,10 +735,11 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       encoding = 'LINEAR16';
       logger.info(`Detected WAV audio format, using LINEAR16 encoding`);
     } 
-    // Default MP3 settings
+    // MP3 audio settings - MP3 is not directly supported, so we'll use FLAC
     else if (mimeType && mimeType.includes('mp3')) {
-      encoding = 'MP3';
-      logger.info(`Detected MP3 audio format`);
+      // For MP3, we need to use one of the supported formats - FLAC is a good default
+      encoding = 'FLAC';
+      logger.info(`Detected MP3 audio format, using FLAC encoding as fallback since MP3 isn't directly supported`);
     }
     // Default options if we can't determine the format
     else {
@@ -757,7 +759,6 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         encoding: encoding,
         sampleRateHertz: sampleRateHertz,
         languageCode: detectedLanguageCode,
-        // Keep only essential parameters, remove all potentially problematic ones
       },
     };
     
