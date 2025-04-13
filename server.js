@@ -832,8 +832,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     // Log the audio buffer size for debugging
     logger.info(`Audio buffer size: ${audioBuffer.length} bytes, mime type: ${mimeType}`);
     
-    // More detailed buffer inspection
-    logger.info(`Buffer starts with: ${audioBuffer.slice(0, 20).toString('hex')}`);
+    // More detailed buffer inspection - log more bytes to better identify the format
+    const headerHex = audioBuffer.slice(0, 32).toString('hex');
+    logger.info(`Buffer header (32 bytes): ${headerHex}`);
     
     // Determine language code based on the provided voice language
     let detectedLanguageCode = 'en-US'; // Default to US English
@@ -861,37 +862,59 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     let encoding = 'LINEAR16'; // Default to LINEAR16
     let sampleRateHertz = 16000;
     
-    // Map MIME types to Google Speech API encoding values
-    if (mimeType) {
+    // Check for WebM/EBML signature in the buffer first regardless of mime type
+    // WebM/EBML files start with 0x1A 0x45 0xDF 0xA3 (hex)
+    if (audioBuffer.length >= 4 && 
+        audioBuffer[0] === 0x1A && 
+        audioBuffer[1] === 0x45 && 
+        audioBuffer[2] === 0xDF && 
+        audioBuffer[3] === 0xA3) {
+      encoding = 'OGG_OPUS';  // WebM typically contains Opus audio
+      sampleRateHertz = 48000; // Use the standard WebM sample rate
+      logger.info(`WebM/EBML signature detected in buffer, using OGG_OPUS encoding with sample rate ${sampleRateHertz}Hz`);
+      
+      // For WebM with OPUS, we need to let Google Speech API detect the sample rate
+      // This helps avoid the specific sample rate mismatch error
+      logger.info('Setting sampleRateHertz to undefined to allow Google to detect from WebM header');
+      sampleRateHertz = undefined;
+    }
+    // Check FLAC signature (fLaC)
+    else if (audioBuffer.length >= 4 && 
+             audioBuffer[0] === 0x66 && // 'f'
+             audioBuffer[1] === 0x4C && // 'L'
+             audioBuffer[2] === 0x61 && // 'a'
+             audioBuffer[3] === 0x43) { // 'C'
+      encoding = 'FLAC';
+      logger.info('FLAC signature detected in buffer');
+      // Let Google detect the sample rate from the FLAC header
+      sampleRateHertz = undefined;
+    }
+    // Map MIME types to Google Speech API encoding values if no signature was detected
+    else if (mimeType) {
       const lowercaseMimeType = mimeType.toLowerCase();
       
       if (lowercaseMimeType.includes('webm')) {
         encoding = 'OGG_OPUS';  // WebM typically contains Opus audio
-        sampleRateHertz = 48000; // Use the standard WebM sample rate
-        logger.info(`Using OGG_OPUS encoding with sample rate ${sampleRateHertz}Hz for WebM`);
+        // For WebM, it's better to let Google detect the sample rate from the header
+        sampleRateHertz = undefined;
+        logger.info(`Using OGG_OPUS encoding with automatic sample rate detection for WebM`);
       }
       else if (lowercaseMimeType.includes('flac')) {
         encoding = 'FLAC';
         
-        // Check FLAC signature
-        let hasValidFlacSignature = false;
-        if (audioBuffer.length >= 4) {
-          const flacSignature = audioBuffer.slice(0, 4).toString();
-          logger.info(`FLAC signature in buffer: ${flacSignature}`);
-          if (flacSignature === 'fLaC') {
-            hasValidFlacSignature = true;
-          }
-        }
-        
         // Always set a sample rate for FLAC to avoid "bad sample rate hertz" error
         // For chunked FLAC files that might not have proper headers
-        if (!hasValidFlacSignature) {
-          sampleRateHertz = 16000; // Default to 16kHz
-          logger.info(`Using FLAC encoding with explicit sample rate of ${sampleRateHertz}Hz because valid FLAC signature not found`);
-        } else {
+        if (audioBuffer.length >= 4 && 
+            audioBuffer[0] === 0x66 && // 'f'
+            audioBuffer[1] === 0x4C && // 'L'
+            audioBuffer[2] === 0x61 && // 'a'
+            audioBuffer[3] === 0x43) { // 'C'
           // If it has a valid signature, let Google detect the rate from the header
           sampleRateHertz = undefined;
           logger.info(`Using FLAC encoding with automatic sample rate detection`);
+        } else {
+          sampleRateHertz = 16000; // Default to 16kHz
+          logger.info(`Using FLAC encoding with explicit sample rate of ${sampleRateHertz}Hz because valid FLAC signature not found`);
         }
       }
       else if (lowercaseMimeType.includes('mulaw')) {
@@ -908,7 +931,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       }
       else if (lowercaseMimeType.includes('opus') || lowercaseMimeType.includes('ogg')) {
         encoding = 'OGG_OPUS';
-        logger.info(`Using OGG_OPUS encoding`);
+        // For Opus/OGG, let Google detect the sample rate
+        sampleRateHertz = undefined;
+        logger.info(`Using OGG_OPUS encoding with automatic sample rate detection`);
       }
       else if (lowercaseMimeType.includes('speex')) {
         encoding = 'SPEEX_WITH_HEADER_BYTE';
@@ -924,9 +949,40 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         logger.info(`Using LINEAR16 encoding with sample rate ${sampleRateHertz}Hz`);
       }
       else {
-        // For any other format (mp3, webm, etc), convert to LINEAR16
-        encoding = 'LINEAR16';
-        logger.info(`Unsupported format "${mimeType}", defaulting to LINEAR16`);
+        // Check binary data for format detection - looking for WebM/EBML or FLAC signatures
+        if (audioBuffer.length >= 4) {
+          // Check for WebM/EBML
+          if (audioBuffer[0] === 0x1A && audioBuffer[1] === 0x45 && 
+              audioBuffer[2] === 0xDF && audioBuffer[3] === 0xA3) {
+            encoding = 'OGG_OPUS';
+            sampleRateHertz = undefined; // Let Google detect
+            logger.info(`WebM/EBML signature detected in file with mime type "${mimeType}", using OGG_OPUS encoding with automatic sample rate detection`);
+          }
+          // Check for FLAC
+          else if (audioBuffer[0] === 0x66 && audioBuffer[1] === 0x4C && 
+                  audioBuffer[2] === 0x61 && audioBuffer[3] === 0x43) {
+            encoding = 'FLAC';
+            sampleRateHertz = undefined; // Let Google detect
+            logger.info(`FLAC signature detected in file with mime type "${mimeType}", using FLAC encoding with automatic sample rate detection`);
+          }
+          // For MP3, look for ID3 header or MP3 frame sync
+          else if ((audioBuffer[0] === 0x49 && audioBuffer[1] === 0x44 && 
+                   audioBuffer[2] === 0x33) || // "ID3"
+                   ((audioBuffer[0] & 0xFF) === 0xFF && (audioBuffer[1] & 0xE0) === 0xE0)) { // MP3 frame sync
+            // Google Speech doesn't support MP3 directly, so we default to LINEAR16
+            encoding = 'LINEAR16';
+            logger.info(`MP3 signature detected in file with mime type "${mimeType}", using LINEAR16 encoding`);
+          }
+          else {
+            // Unrecognized format
+            encoding = 'LINEAR16';
+            logger.info(`No known audio signature detected in "${mimeType}" file, defaulting to LINEAR16 encoding`);
+          }
+        } else {
+          // Buffer too small to detect
+          encoding = 'LINEAR16';
+          logger.info(`Buffer too small to detect format in "${mimeType}" file, defaulting to LINEAR16 encoding`);
+        }
       }
     }
     

@@ -14,6 +14,10 @@ const API_KEY = 'greenur_botanist_secret_734fd98a15e3b94c';
 const WS_URL = `ws://localhost:${PORT}?api_key=${API_KEY}`;
 const TEST_AUDIO_FILE = path.resolve(__dirname, 'test_files/test_voice.flac');
 
+// Add option to specify audio format from command line
+const audioFormat = process.argv[2] || 'flac';
+console.log(`Using audio format: ${audioFormat}`);
+
 // Connect to WebSocket
 console.log(`Connecting to WebSocket server at ${WS_URL}...`);
 const socket = new WebSocket(WS_URL);
@@ -111,17 +115,29 @@ function sendAudioFile() {
   // Convert to base64
   const base64Audio = fileBuffer.toString('base64');
   
+  // Determine MIME type based on command line argument
+  let mimeType = 'audio/flac';
+  if (audioFormat === 'webm-as-mp3') {
+    // Simulate the problem scenario: WebM file labeled as MP3
+    mimeType = 'audio/mp3';
+    console.log('Testing scenario: WebM audio incorrectly labeled as MP3');
+  } else if (audioFormat === 'webm') {
+    mimeType = 'audio/webm';
+  } else if (audioFormat === 'mp3') {
+    mimeType = 'audio/mp3';
+  }
+  
   // Send as a single message with the correct MIME type
   const message = {
     type: 'audio_data',
     audio: base64Audio,
     format: 'base64',
-    mimeType: 'audio/flac'
+    mimeType: mimeType
   };
   
   // Send the message
   socket.send(JSON.stringify(message));
-  console.log(`Sent complete FLAC file (${fileBuffer.length} bytes)`);
+  console.log(`Sent complete audio file as ${mimeType} (${fileBuffer.length} bytes)`);
 }
 
 // Handle process termination
