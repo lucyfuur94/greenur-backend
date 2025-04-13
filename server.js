@@ -1003,14 +1003,17 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       },
     };
     
-    // For Hindi/English speakers, add alternative language code to improve mixed content recognition
+    // Add alternative language codes to help with mixed-language speech detection
+    // This allows the API to automatically switch between English and Hindi
     if (detectedLanguageCode === 'hi-IN') {
-      // Add English as alternative language for Hindi speakers who may mix English words
+      // For Hindi primary, add English as alternative
       request.config.alternativeLanguageCodes = ['en-US', 'en-IN'];
       logger.info('Added English as alternative language for Hindi speech recognition');
-    } 
-    // Don't automatically add Hindi for English - based on logs, this causes misrecognition
-    // We can add this back with a flag if users specifically need Hindi-English mixed recognition
+    } else if (detectedLanguageCode === 'en-IN' || detectedLanguageCode === 'en-US') {
+      // For English primary, add Hindi as alternative
+      request.config.alternativeLanguageCodes = ['hi-IN'];
+      logger.info('Added Hindi as alternative language for English speech recognition');
+    }
     
     // Only set sample rate if it's defined (needed for most formats but not for FLAC)
     if (sampleRateHertz !== undefined) {
@@ -1027,6 +1030,13 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     if (!response || !response.results || response.results.length === 0) {
       logger.warn('Speech recognition returned no results');
       return null;
+    }
+    
+    // Detect actual language used in the recognition
+    let detectedActualLanguage = null;
+    if (response.results[0] && response.results[0].languageCode) {
+      detectedActualLanguage = response.results[0].languageCode;
+      logger.info(`Google detected actual speech language: ${detectedActualLanguage}`);
     }
     
     // Get the transcription from the response
