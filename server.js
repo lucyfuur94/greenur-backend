@@ -845,10 +845,10 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         detectedLanguageCode = 'hi-IN';
         logger.info(`Hindi voice detected, using language code: ${detectedLanguageCode}`);
       } 
-      // If it's Indian English, use en-US for better recognition accuracy
+      // Use the provided language code as is for Indian English
       else if (languageCode === 'en-IN') {
-        detectedLanguageCode = 'en-US';
-        logger.info(`Indian English voice detected, using language code: ${detectedLanguageCode} for better recognition`);
+        detectedLanguageCode = 'en-IN';
+        logger.info(`Indian English voice detected, using language code: ${detectedLanguageCode}`);
       }
       // Otherwise use the provided language code
       else {
@@ -1008,11 +1008,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       // Add English as alternative language for Hindi speakers who may mix English words
       request.config.alternativeLanguageCodes = ['en-US', 'en-IN'];
       logger.info('Added English as alternative language for Hindi speech recognition');
-    } else if (detectedLanguageCode === 'en-US' || detectedLanguageCode === 'en-IN') {
-      // Add Hindi as alternative language for English speakers who may mix Hindi words
-      request.config.alternativeLanguageCodes = ['hi-IN'];
-      logger.info('Added Hindi as alternative language for English speech recognition');
-    }
+    } 
+    // Don't automatically add Hindi for English - based on logs, this causes misrecognition
+    // We can add this back with a flag if users specifically need Hindi-English mixed recognition
     
     // Only set sample rate if it's defined (needed for most formats but not for FLAC)
     if (sampleRateHertz !== undefined) {
