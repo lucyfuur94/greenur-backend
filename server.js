@@ -872,13 +872,13 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         audioBuffer[1] === 0x45 && 
         audioBuffer[2] === 0xDF && 
         audioBuffer[3] === 0xA3) {
-      encoding = 'OGG_OPUS';  // WebM typically contains Opus audio
-      sampleRateHertz = 48000; // Use the standard WebM sample rate
-      logger.info(`WebM/EBML signature detected in buffer, using OGG_OPUS encoding with sample rate ${sampleRateHertz}Hz`);
+      // WebM can contain different audio codecs (OPUS, Vorbis)
+      // Let's try different options if one doesn't work
+      encoding = 'OGG_OPUS';  // First try OPUS since it's most common in WebM
       
       // For WebM with OPUS, we need to let Google Speech API detect the sample rate
       // This helps avoid the specific sample rate mismatch error
-      logger.info('Setting sampleRateHertz to undefined to allow Google to detect from WebM header');
+      logger.info('WebM/EBML signature detected in buffer, using OGG_OPUS encoding with automatic sample rate detection');
       sampleRateHertz = undefined;
       
       // WebM files often have 2 audio channels
@@ -1006,9 +1006,12 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       config: {
         encoding: encoding,
         languageCode: detectedLanguageCode,
-        model: 'default',
+        model: "latest_long", // Use the "latest_long" model for better quality, especially with OGG_OPUS
         useEnhanced: true,
         enableAutomaticPunctuation: true,
+        profanityFilter: false, // Allow all words to improve recognition
+        enableWordTimeOffsets: false,
+        enableWordConfidence: true,
       },
     };
     
@@ -1039,6 +1042,22 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       request.config.sampleRateHertz = sampleRateHertz;
     }
     
+    // Add speech contexts to help with recognition
+    if (detectedLanguageCode === 'hi-IN' || detectedLanguageCode === 'en-IN') {
+      // Add common Indian English and Hindi phrases to help recognition
+      request.config.speechContexts = [
+        {
+          phrases: [
+            "hello", "hi", "namaste", "how are you", "kaise ho", "what are you doing",
+            "kya kar rahe ho", "thank you", "dhanyavaad", "plant", "garden", "water",
+            "fertilizer", "paudha", "bagichaa", "paani", "khaad"
+          ],
+          boost: 10
+        }
+      ];
+      logger.info('Added speech context with common phrases for better recognition');
+    }
+    
     // Perform the speech recognition
     logger.info('Sending request to Google Speech-to-Text API...');
     const [response] = await speechClient.recognize(request);
@@ -1048,6 +1067,34 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     
     if (!response || !response.results || response.results.length === 0) {
       logger.warn('Speech recognition returned no results');
+      
+      // If no results with OGG_OPUS encoding for WebM, try with a different encoding
+      if (webmDetected && encoding === 'OGG_OPUS') {
+        logger.info('Trying alternative approach for WebM: using LINEAR16 encoding...');
+        
+        // Update the request to use LINEAR16 encoding
+        request.config.encoding = 'LINEAR16';
+        request.config.sampleRateHertz = 16000; // Standard rate for LINEAR16
+        
+        try {
+          // Try recognition again with different encoding
+          const [alternativeResponse] = await speechClient.recognize(request);
+          logger.info(`Alternative speech recognition response: ${JSON.stringify(alternativeResponse, null, 2)}`);
+          
+          if (alternativeResponse && alternativeResponse.results && alternativeResponse.results.length > 0) {
+            // Get the transcription from the response
+            const alternativeTranscription = alternativeResponse.results
+              .map(result => result.alternatives[0].transcript)
+              .join('\n');
+            
+            logger.info(`Alternative speech recognition successful: "${alternativeTranscription}"`);
+            return alternativeTranscription;
+          }
+        } catch (alternativeError) {
+          logger.error('Error in alternative speech recognition approach:', alternativeError);
+        }
+      }
+      
       return null;
     }
     
