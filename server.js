@@ -203,7 +203,7 @@ app.post('/api/chat', authenticateRequest, async (req, res) => {
       session = {
         id: newSessionId,
         conversationContext: [],
-        modelId: modelId || 'gpt-4o',
+        modelId: modelId || 'gpt-4o-mini',
         modelType: modelType || 'openai',
         voiceConfig: {
           languageCode: 'en-IN',
@@ -315,7 +315,7 @@ wss.on('connection', (ws) => {
     id: connectionId,
     ws,
     conversationContext: [],
-    modelId: 'gpt-4o', // Default model
+    modelId: 'gpt-4o-mini', // Default model
     modelType: 'openai', // Default model type
     audioSession: false, // Whether this session is using audio
     voiceConfig: {
@@ -558,7 +558,7 @@ async function processUserMessage(session, userMessage) {
       ];
       
       // Use the model passed from the client
-      const model = session.modelId || 'gpt-4o';
+      const model = session.modelId || 'gpt-4o-mini';
       
       // Get response from OpenAI
       const response = await openai.chat.completions.create({
