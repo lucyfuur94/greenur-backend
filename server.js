@@ -826,6 +826,9 @@ async function processAudioData(connectionData, audioBuffer, mimeType) {
  */
 async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'audio/mp3') {
   try {
+    // Flag to track if WebM format is detected
+    let webmDetected = false;
+    
     // Convert the audio buffer to a base64-encoded string
     const audioBytes = audioBuffer.toString('base64');
     
@@ -877,6 +880,9 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       // This helps avoid the specific sample rate mismatch error
       logger.info('Setting sampleRateHertz to undefined to allow Google to detect from WebM header');
       sampleRateHertz = undefined;
+      
+      // WebM files often have 2 audio channels
+      webmDetected = true;
     }
     // Check FLAC signature (fLaC)
     else if (audioBuffer.length >= 4 && 
@@ -898,6 +904,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         // For WebM, it's better to let Google detect the sample rate from the header
         sampleRateHertz = undefined;
         logger.info(`Using OGG_OPUS encoding with automatic sample rate detection for WebM`);
+        webmDetected = true;
       }
       else if (lowercaseMimeType.includes('flac')) {
         encoding = 'FLAC';
@@ -934,6 +941,8 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         // For Opus/OGG, let Google detect the sample rate
         sampleRateHertz = undefined;
         logger.info(`Using OGG_OPUS encoding with automatic sample rate detection`);
+        // OGG/OPUS files may also have 2 channels
+        webmDetected = true;
       }
       else if (lowercaseMimeType.includes('speex')) {
         encoding = 'SPEEX_WITH_HEADER_BYTE';
@@ -957,6 +966,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
             encoding = 'OGG_OPUS';
             sampleRateHertz = undefined; // Let Google detect
             logger.info(`WebM/EBML signature detected in file with mime type "${mimeType}", using OGG_OPUS encoding with automatic sample rate detection`);
+            webmDetected = true;
           }
           // Check for FLAC
           else if (audioBuffer[0] === 0x66 && audioBuffer[1] === 0x4C && 
@@ -999,9 +1009,18 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
         model: 'default',
         useEnhanced: true,
         enableAutomaticPunctuation: true,
-        audioChannelCount: 1, // Assume mono for voice recording
       },
     };
+    
+    // Set audio channel count based on detected format
+    if (webmDetected) {
+      // For WebM, either leave unspecified or use 2 channels as detected in the header
+      logger.info('Using 2 audio channels for WebM/OPUS format');
+      request.config.audioChannelCount = 2;
+    } else {
+      // For other formats, assume mono
+      request.config.audioChannelCount = 1; // Assume mono for voice recording
+    }
     
     // Add alternative language codes to help with mixed-language speech detection
     // This allows the API to automatically switch between English and Hindi
