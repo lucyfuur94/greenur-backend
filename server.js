@@ -438,8 +438,12 @@ wss.on('connection', (ws) => {
           // Process audio data (binary, base64, etc.)
           if (data.format === 'base64') {
             const audioBuffer = Buffer.from(data.audio, 'base64');
-            // Pass the language code from the current voice config
-            const transcript = await speechToText(audioBuffer, connectionData.voiceConfig.languageCode);
+            // Pass the language code from the current voice config and the mime type
+            const transcript = await speechToText(
+              audioBuffer, 
+              connectionData.voiceConfig.languageCode, 
+              data.mimeType || 'audio/mp3'
+            );
             
             if (transcript) {
               logger.info(`Transcribed audio from ${connectionId}: "${transcript}"`);
@@ -697,7 +701,7 @@ async function textToSpeech(text, voiceConfig) {
 /**
  * Convert speech to text
  */
-async function speechToText(audioBuffer, languageCode = 'en-IN') {
+async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'audio/mp3') {
   try {
     // Convert the audio buffer to a base64-encoded string
     const audioBytes = audioBuffer.toString('base64');
@@ -720,7 +724,19 @@ async function speechToText(audioBuffer, languageCode = 'en-IN') {
       }
     }
     
-    logger.info(`Using speech recognition language: ${detectedLanguageCode}`);
+    // Determine encoding based on mime type
+    let encoding = 'MP3';
+    if (mimeType && mimeType.includes('webm')) {
+      encoding = 'WEBM_OPUS';
+      logger.info(`Detected WebM audio format, using WEBM_OPUS encoding`);
+    } else if (mimeType && mimeType.includes('wav')) {
+      encoding = 'LINEAR16';
+      logger.info(`Detected WAV audio format, using LINEAR16 encoding`);
+    } else {
+      logger.info(`Using default MP3 encoding`);
+    }
+    
+    logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}`);
     
     // Create the request
     const request = {
@@ -728,7 +744,7 @@ async function speechToText(audioBuffer, languageCode = 'en-IN') {
         content: audioBytes,
       },
       config: {
-        encoding: 'MP3',
+        encoding: encoding,
         sampleRateHertz: 48000,
         languageCode: detectedLanguageCode,
         model: 'default',
