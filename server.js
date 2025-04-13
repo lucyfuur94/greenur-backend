@@ -82,8 +82,11 @@ if (process.env.GOOGLE_CREDENTIALS_JSON) {
 const app = express();
 const server = http.createServer(app);
 
-// Create WebSocket server (without attaching it to HTTP server directly)
-const wss = new WebSocket.Server({ noServer: true });
+// Create WebSocket server with noServer option
+const wss = new WebSocket.Server({ 
+  noServer: true,
+  perMessageDeflate: false  // Disable compression for better stability
+});
 
 // Initialize OpenAI
 const openai = new OpenAI({
@@ -290,18 +293,40 @@ const authenticateWebSocket = (request) => {
   return true;
 };
 
-// WebSocket server upgrade with authentication - single handler approach
+// Keep track of sockets that are being upgraded to prevent duplicate handling
+const upgradingSocketsMap = new Map();
+
+// WebSocket server upgrade with authentication
 server.on('upgrade', (request, socket, head) => {
+  const socketId = `${socket.remoteAddress}:${socket.remotePort}`;
+  
+  // Check if this socket is already being upgraded
+  if (upgradingSocketsMap.has(socketId)) {
+    logger.debug(`Ignoring duplicate upgrade request for socket ${socketId}`);
+    return;
+  }
+  
+  // Mark this socket as being upgraded
+  upgradingSocketsMap.set(socketId, true);
+  
+  // Remove socket from map when it closes
+  socket.on('close', () => {
+    upgradingSocketsMap.delete(socketId);
+  });
+  
   // Authenticate the WebSocket connection
   if (!authenticateWebSocket(request)) {
+    logger.info('WebSocket authentication failed');
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
+    upgradingSocketsMap.delete(socketId);
     return;
   }
   
   // If authentication passes, upgrade the connection to WebSocket
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request);
+    upgradingSocketsMap.delete(socketId);
   });
 });
 
@@ -693,8 +718,6 @@ async function textToSpeech(text, voiceConfig) {
  */
 async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'audio/mp3') {
   try {
-    logger.info(`Starting speech-to-text conversion for ${audioBuffer.length} bytes of audio data with MIME type: ${mimeType || 'unknown'}`);
-    
     // Convert the audio buffer to a base64-encoded string
     const audioBytes = audioBuffer.toString('base64');
     
@@ -716,81 +739,88 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
       }
     }
     
-    // Determine encoding based on mime type - use valid values from Google Speech API
-    // Valid encodings: LINEAR16, FLAC, MULAW, AMR, AMR_WB, OGG_OPUS, SPEEX_WITH_HEADER_BYTE
-    let encoding = 'FLAC'; // Default to FLAC as it's commonly supported
-    let sampleRateHertz = 48000;
+    // Determine encoding based on mime type - only use supported formats
+    // SUPPORTED FORMATS: LINEAR16, FLAC, MULAW, AMR, AMR_WB, OGG_OPUS, SPEEX_WITH_HEADER_BYTE
+    let encoding = 'LINEAR16'; // Default to LINEAR16
+    let sampleRateHertz = 16000; // Default sample rate
     
-    // WebM with Opus codec specific settings
-    if (mimeType && mimeType.includes('webm') && mimeType.includes('opus')) {
-      encoding = 'OGG_OPUS';
-      sampleRateHertz = 48000;
-      logger.info(`Detected WebM/Opus audio format, using OGG_OPUS encoding at ${sampleRateHertz}Hz`);
-    } 
-    // Regular WebM (without opus) settings
-    else if (mimeType && mimeType.includes('webm')) {
-      encoding = 'OGG_OPUS';
-      logger.info(`Detected WebM audio format, using OGG_OPUS encoding`);
-    } 
-    // WAV audio settings
-    else if (mimeType && mimeType.includes('wav')) {
-      encoding = 'LINEAR16';
-      logger.info(`Detected WAV audio format, using LINEAR16 encoding`);
-    } 
-    // MP3 audio settings - MP3 is not directly supported, so we'll use FLAC
-    else if (mimeType && mimeType.includes('mp3')) {
-      // For MP3, we need to use one of the supported formats - FLAC is a good default
-      encoding = 'FLAC';
-      logger.info(`Detected MP3 audio format, using FLAC encoding as fallback since MP3 isn't directly supported`);
-    }
-    // Default options if we can't determine the format
-    else {
-      // Default to FLAC as it's widely supported
-      encoding = 'FLAC';
-      logger.info(`Using default FLAC encoding as fallback`);
+    // Map MIME types to Google Speech API encoding values
+    if (mimeType) {
+      const lowercaseMimeType = mimeType.toLowerCase();
+      
+      if (lowercaseMimeType.includes('flac')) {
+        encoding = 'FLAC';
+        logger.info(`Using FLAC encoding`);
+      } 
+      else if (lowercaseMimeType.includes('mulaw')) {
+        encoding = 'MULAW';
+        logger.info(`Using MULAW encoding`);
+      }
+      else if (lowercaseMimeType.includes('amr_wb') || lowercaseMimeType.includes('amr-wb')) {
+        encoding = 'AMR_WB';
+        logger.info(`Using AMR_WB encoding`);
+      }
+      else if (lowercaseMimeType.includes('amr')) {
+        encoding = 'AMR';
+        logger.info(`Using AMR encoding`);
+      }
+      else if (lowercaseMimeType.includes('opus') || lowercaseMimeType.includes('ogg')) {
+        encoding = 'OGG_OPUS';
+        logger.info(`Using OGG_OPUS encoding`);
+      }
+      else if (lowercaseMimeType.includes('speex')) {
+        encoding = 'SPEEX_WITH_HEADER_BYTE';
+        logger.info(`Using SPEEX_WITH_HEADER_BYTE encoding`);
+      }
+      else if (lowercaseMimeType.includes('wav') || lowercaseMimeType.includes('linear') || lowercaseMimeType.includes('l16')) {
+        encoding = 'LINEAR16';
+        // Extract sample rate if provided
+        const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+        if (sampleRateMatch && sampleRateMatch[1]) {
+          sampleRateHertz = parseInt(sampleRateMatch[1], 10);
+        }
+        logger.info(`Using LINEAR16 encoding with sample rate ${sampleRateHertz}Hz`);
+      }
+      else {
+        // For any other format (mp3, webm, etc), convert to LINEAR16
+        encoding = 'LINEAR16';
+        logger.info(`Unsupported format "${mimeType}", defaulting to LINEAR16`);
+      }
     }
     
     logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}, sample rate: ${sampleRateHertz}Hz`);
     
-    try {
-      // Create the request with correct parameter types
-      const request = {
-        audio: {
-          content: audioBytes,
-        },
-        config: {
-          encoding: encoding,
-          sampleRateHertz: sampleRateHertz,
-          languageCode: detectedLanguageCode,
-        },
-      };
-      
-      // Log the request configuration for debugging
-      logger.debug(`Speech recognition request config: ${JSON.stringify(request.config, null, 2)}`);
-      
-      // Perform the speech recognition
-      logger.info(`Sending speech recognition request to Google API...`);
-      const [response] = await speechClient.recognize(request);
-      
-      if (!response || !response.results || response.results.length === 0) {
-        logger.warn('Speech recognition returned no results');
-        return null;
-      }
-      
-      // Get the transcription from the response
-      const transcription = response.results
-        .map(result => result.alternatives[0].transcript)
-        .join('\n');
-      
-      logger.info(`Speech recognition successful: "${transcription}"`);
-      return transcription;
-    } catch (apiError) {
-      logger.error(`Google Speech API error:`, apiError);
-      if (apiError.details) {
-        logger.error('API error details:', apiError.details);
-      }
+    // Create the request with correct parameter types
+    const request = {
+      audio: {
+        content: audioBytes,
+      },
+      config: {
+        encoding: encoding,
+        sampleRateHertz: sampleRateHertz,
+        languageCode: detectedLanguageCode,
+        model: 'default',
+        useEnhanced: true,
+        enableAutomaticPunctuation: true,
+        audioChannelCount: 1, // Assume mono for voice recording
+      },
+    };
+    
+    // Perform the speech recognition
+    const [response] = await speechClient.recognize(request);
+    
+    if (!response || !response.results || response.results.length === 0) {
+      logger.warn('Speech recognition returned no results');
       return null;
     }
+    
+    // Get the transcription from the response
+    const transcription = response.results
+      .map(result => result.alternatives[0].transcript)
+      .join('\n');
+    
+    logger.info(`Speech recognition successful: "${transcription}"`);
+    return transcription;
   } catch (error) {
     logger.error('Error in speech-to-text:', error);
     // Log more details about the error
@@ -898,8 +928,6 @@ app.get('/api/preview-voice', authenticateRequest, async (req, res) => {
  */
 async function processAudioData(connectionData, audioBuffer, mimeType) {
   try {
-    logger.info(`Processing audio data of size ${audioBuffer.length} bytes with MIME type ${mimeType}`);
-    
     // Pass the language code from the current voice config and the mime type
     const transcript = await speechToText(
       audioBuffer,
@@ -946,7 +974,6 @@ async function processAudioData(connectionData, audioBuffer, mimeType) {
         }
       }
     } else {
-      logger.error(`Could not transcribe audio - no transcript returned`);
       sendError(connectionData.ws, 'Could not transcribe audio');
     }
   } catch (error) {
