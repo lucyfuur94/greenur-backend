@@ -693,6 +693,8 @@ async function textToSpeech(text, voiceConfig) {
  */
 async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'audio/mp3') {
   try {
+    logger.info(`Starting speech-to-text conversion for ${audioBuffer.length} bytes of audio data with MIME type: ${mimeType || 'unknown'}`);
+    
     // Convert the audio buffer to a base64-encoded string
     const audioBytes = audioBuffer.toString('base64');
     
@@ -750,36 +752,45 @@ async function speechToText(audioBuffer, languageCode = 'en-IN', mimeType = 'aud
     
     logger.info(`Using speech recognition language: ${detectedLanguageCode}, encoding: ${encoding}, sample rate: ${sampleRateHertz}Hz`);
     
-    // Create the request with correct parameter types
-    const request = {
-      audio: {
-        content: audioBytes,
-      },
-      config: {
-        encoding: encoding,
-        sampleRateHertz: sampleRateHertz,
-        languageCode: detectedLanguageCode,
-      },
-    };
-    
-    // Log the request configuration for debugging
-    logger.debug(`Speech recognition request config: ${JSON.stringify(request.config, null, 2)}`);
-    
-    // Perform the speech recognition
-    const [response] = await speechClient.recognize(request);
-    
-    if (!response || !response.results || response.results.length === 0) {
-      logger.warn('Speech recognition returned no results');
+    try {
+      // Create the request with correct parameter types
+      const request = {
+        audio: {
+          content: audioBytes,
+        },
+        config: {
+          encoding: encoding,
+          sampleRateHertz: sampleRateHertz,
+          languageCode: detectedLanguageCode,
+        },
+      };
+      
+      // Log the request configuration for debugging
+      logger.debug(`Speech recognition request config: ${JSON.stringify(request.config, null, 2)}`);
+      
+      // Perform the speech recognition
+      logger.info(`Sending speech recognition request to Google API...`);
+      const [response] = await speechClient.recognize(request);
+      
+      if (!response || !response.results || response.results.length === 0) {
+        logger.warn('Speech recognition returned no results');
+        return null;
+      }
+      
+      // Get the transcription from the response
+      const transcription = response.results
+        .map(result => result.alternatives[0].transcript)
+        .join('\n');
+      
+      logger.info(`Speech recognition successful: "${transcription}"`);
+      return transcription;
+    } catch (apiError) {
+      logger.error(`Google Speech API error:`, apiError);
+      if (apiError.details) {
+        logger.error('API error details:', apiError.details);
+      }
       return null;
     }
-    
-    // Get the transcription from the response
-    const transcription = response.results
-      .map(result => result.alternatives[0].transcript)
-      .join('\n');
-    
-    logger.info(`Speech recognition successful: "${transcription}"`);
-    return transcription;
   } catch (error) {
     logger.error('Error in speech-to-text:', error);
     // Log more details about the error
@@ -887,6 +898,8 @@ app.get('/api/preview-voice', authenticateRequest, async (req, res) => {
  */
 async function processAudioData(connectionData, audioBuffer, mimeType) {
   try {
+    logger.info(`Processing audio data of size ${audioBuffer.length} bytes with MIME type ${mimeType}`);
+    
     // Pass the language code from the current voice config and the mime type
     const transcript = await speechToText(
       audioBuffer,
@@ -933,6 +946,7 @@ async function processAudioData(connectionData, audioBuffer, mimeType) {
         }
       }
     } else {
+      logger.error(`Could not transcribe audio - no transcript returned`);
       sendError(connectionData.ws, 'Could not transcribe audio');
     }
   } catch (error) {
